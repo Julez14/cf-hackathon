@@ -39,7 +39,7 @@ Record important product, architecture, implementation, and model decisions here
 
 ## 2026-07-22: Use the real room flow with mock image generation
 
-**Status:** Accepted for the pre-AI MVP
+**Status:** Superseded by the Workers AI image path
 
 **Decision:** Drive the real Durable Object phases through public Worker actions while returning deterministic, same-origin SVG images from typed transcripts.
 
@@ -50,6 +50,20 @@ Record important product, architecture, implementation, and model decisions here
 - The public Worker exposes `start`, `mock-entry`, and `vote` actions.
 - Mock entries use the same Durable Object state transitions as future AI-backed entries.
 - The mock SVG path will be replaced by Workers AI and image storage without changing authoritative game rules.
+
+## 2026-07-22: Use cache-backed Workers AI images for the playable MVP
+
+**Status:** Accepted temporarily
+
+**Decision:** Generate player images with `@cf/black-forest-labs/flux-2-klein-4b`, cache them behind same-origin Worker URLs, and regenerate from the Durable Object's final prompt after a cache miss.
+
+**Rationale:** The game needs real AI images now, while R2, Cloudflare Images, and D1 persistence can follow after the live game works.
+
+**Consequences:**
+
+- Typed and recorded voice prompts share the same image-generation path.
+- Generated images are not durable and may be regenerated after cache eviction.
+- The Durable Object continues to store only metadata and the exact final prompt.
 
 ## 2026-07-22: Authenticate room actions with player session tokens
 
@@ -64,3 +78,17 @@ Record important product, architecture, implementation, and model decisions here
 - The browser keeps the token in local storage and sends it when opening the room WebSocket.
 - The Durable Object never broadcasts raw tokens or token hashes.
 - The public Worker forwards the token for `start`, `reserve-entry`, and `vote` validation.
+
+## 2026-07-22: Start prompting immediately and wait for every player
+
+**Status:** Accepted
+
+**Decision:** Starting a round immediately reveals the creative brief. There is no countdown or prompt deadline. Voting opens after every player entry is ready or failed.
+
+**Rationale:** Removing timers keeps the live demo simple and lets every player finish their prompt before the game advances.
+
+**Consequences:**
+
+- A room can remain in prompting if a player never submits.
+- Entry status updates show the room who is still working.
+- The voting deadline remains unchanged.

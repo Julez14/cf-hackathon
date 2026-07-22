@@ -59,17 +59,17 @@ A visitor creates a room or enters an existing room code.
 
 The room displays joined players, the leader, and a QR code. The leader can start only when at least two players are present. Rooms support a maximum of four players for a clear 2 x 2 arena.
 
-### Step 3: Countdown and Creative Brief
+### Step 3: Creative Brief
 
-The leader starts the round. After a five-second countdown, every player sees the same base brief, for example: "A dog running through a field."
+The leader starts the round and every player immediately sees the same base brief, for example: "A dog running through a field."
 
-### Step 4: Voice Prompt Window
+### Step 4: Player Prompt
 
-Each player has 15 to 20 seconds to record a short twist, for example: "but it is a 1980s action movie." The system transcribes the clip and builds a generation prompt from the base brief plus the player's twist.
+Each player types or records a short twist, for example: "but it is a 1980s action movie." The system builds a generation prompt from the base brief plus the player's twist.
 
 ### Step 5: Live Generation
 
-Each player panel broadcasts its current status to the room. Images reveal independently as they complete. The submission timer prevents late entries; voting begins when submitted image jobs resolve or the room reaches a defined generation timeout.
+Each player panel broadcasts its current status to the room. Images reveal independently as they complete. Voting begins after every player entry is ready or failed.
 
 ### Step 6: Vote and Result
 
@@ -87,7 +87,7 @@ The system saves the room outcome and final images. The result screen can be sho
 - Join an open room by code or QR-derived URL.
 - Track player presence and leader assignment in real time.
 - Enforce a maximum of four players and one active round per room.
-- Enforce room phases: `lobby`, `countdown`, `prompting`, `generating`, `voting`, and `results`.
+- Enforce room phases: `lobby`, `prompting`, `generating`, `voting`, and `results`.
 
 ### Voice and Generation
 

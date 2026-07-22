@@ -2,6 +2,7 @@ import { renderApp } from "./site";
 import { toString as renderQrCode } from "qrcode";
 
 export interface Env {
+  AI: Ai;
   ROOMS: DurableObjectNamespace;
 }
 
@@ -10,6 +11,7 @@ const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 const PLAYER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,100}$/;
 const SESSION_TOKEN_PATTERN = /^[a-zA-Z0-9_-]{32,200}$/;
 const MAX_ACTION_BODY_BYTES = 4_096;
+const MAX_AUDIO_BODY_BYTES = 12 * 1024 * 1024;
 const MAX_CREATE_ATTEMPTS = 5;
 const MOCK_BRIEFS = [
   "A dog running through a field",
@@ -41,14 +43,34 @@ export default {
       return env.ROOMS.getByName(code).fetch(request);
     }
 
-    const roomActionMatch = /^\/api\/rooms\/([a-z0-9]{6})\/actions\/(start|mock-entry|vote)$/i.exec(url.pathname);
+    const speechMatch = /^\/api\/rooms\/([a-z0-9]{6})\/actions\/speech$/i.exec(url.pathname);
+    if (request.method === "POST" && speechMatch) {
+      const code = speechMatch[1].toUpperCase();
+      if (!isRoomCode(code)) {
+        return json({ error: "Enter a valid six-character room code." }, 400);
+      }
+      return handleSpeechEntry(request, env, env.ROOMS.getByName(code), code);
+    }
+
+    const roomActionMatch = /^\/api\/rooms\/([a-z0-9]{6})\/actions\/(start|submit|mock-entry|vote)$/i.exec(url.pathname);
     if (request.method === "POST" && roomActionMatch) {
       const code = roomActionMatch[1].toUpperCase();
       if (!isRoomCode(code)) {
         return json({ error: "Enter a valid six-character room code." }, 400);
       }
 
-      return handleRoomAction(request, env.ROOMS.getByName(code), code, roomActionMatch[2].toLowerCase());
+      return handleRoomAction(request, env, env.ROOMS.getByName(code), code, roomActionMatch[2].toLowerCase());
+    }
+
+    const imageMatch = /^\/api\/rooms\/([a-z0-9]{6})\/images\/([a-zA-Z0-9_-]{8,100})$/i.exec(url.pathname);
+    if (request.method === "GET" && imageMatch) {
+      const code = imageMatch[1].toUpperCase();
+      const playerId = imageMatch[2];
+      if (!isRoomCode(code) || !PLAYER_ID_PATTERN.test(playerId)) {
+        return json({ error: "Image not found." }, 404);
+      }
+
+      return generatedImage(request, env, env.ROOMS.getByName(code), code, playerId);
     }
 
     const mockImageMatch = /^\/api\/rooms\/([a-z0-9]{6})\/mock-images\/([a-zA-Z0-9_-]{8,100})\.svg$/i.exec(url.pathname);
@@ -110,6 +132,7 @@ async function createRoom(env: Env): Promise<Response> {
 
 async function handleRoomAction(
   request: Request,
+  env: Env,
   room: DurableObjectStub,
   code: string,
   action: string
@@ -143,6 +166,10 @@ async function handleRoomAction(
     return json({ error: "A valid player session and mock transcript are required." }, 400);
   }
 
+  if (action === "submit") {
+    return generateEntry(request, env, room, code, playerId, sessionToken, transcript);
+  }
+
   const reserved = await roomAction(room, "reserve-entry", { playerId, sessionToken });
   if (!reserved.ok) {
     return reserved;
@@ -172,6 +199,226 @@ async function handleRoomAction(
     console.error("Mock entry failed", { code, playerId, error: error instanceof Error ? error.message : String(error) });
     return json({ error: "Mock image generation failed." }, 502);
   }
+}
+
+async function generateEntry(
+  request: Request,
+  env: Env,
+  room: DurableObjectStub,
+  code: string,
+  playerId: string,
+  sessionToken: string,
+  transcript: string
+): Promise<Response> {
+  const reserved = await roomAction(room, "reserve-entry", { playerId, sessionToken });
+  if (!reserved.ok) {
+    return reserved;
+  }
+
+  return completeEntry(request, env, room, code, playerId, transcript);
+}
+
+async function handleSpeechEntry(request: Request, env: Env, room: DurableObjectStub, code: string): Promise<Response> {
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_AUDIO_BODY_BYTES) {
+    return json({ error: "Audio clip is too large." }, 413);
+  }
+
+  const form = await request.formData().catch(() => undefined);
+  const playerId = form?.get("playerId");
+  const sessionToken = form?.get("sessionToken");
+  const audio = form?.get("audio");
+  if (
+    typeof playerId !== "string" ||
+    !PLAYER_ID_PATTERN.test(playerId) ||
+    typeof sessionToken !== "string" ||
+    !SESSION_TOKEN_PATTERN.test(sessionToken) ||
+    !(audio instanceof File) ||
+    audio.size === 0 ||
+    audio.size > MAX_AUDIO_BODY_BYTES
+  ) {
+    return json({ error: "A valid player session and audio clip are required." }, 400);
+  }
+
+  const reserved = await roomAction(room, "reserve-entry", { playerId, sessionToken });
+  if (!reserved.ok) {
+    return reserved;
+  }
+
+  try {
+    const transcription = await env.AI.run("@cf/openai/whisper-large-v3-turbo", {
+      audio: {
+        body: audio.stream(),
+        contentType: audio.type || "application/octet-stream"
+      },
+      task: "transcribe",
+      vad_filter: true,
+      condition_on_previous_text: false
+    });
+    const transcript = normalizeTranscript(transcription.text);
+    if (!transcript) {
+      throw new Error("Workers AI returned no speech.");
+    }
+    return completeEntry(request, env, room, code, playerId, transcript);
+  } catch (error) {
+    await roomAction(room, "entry-failed", { playerId, error: "Workers AI could not hear a prompt." }).catch(
+      () => undefined
+    );
+    console.error("Speech transcription failed", {
+      code,
+      playerId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return json({ error: "Workers AI could not hear a prompt." }, 502);
+  }
+}
+
+async function completeEntry(
+  request: Request,
+  env: Env,
+  room: DurableObjectStub,
+  code: string,
+  playerId: string,
+  transcript: string
+): Promise<Response> {
+
+  try {
+    const generating = await roomAction(room, "entry-generating", { playerId, transcript });
+    if (!generating.ok) {
+      await roomAction(room, "entry-failed", { playerId, error: "Prompt preparation failed." });
+      return generating;
+    }
+
+    const snapshot = await generating.clone().json<unknown>();
+    const finalPrompt = readFinalPrompt(snapshot, playerId);
+    if (!finalPrompt) {
+      throw new Error("The room did not return a final prompt.");
+    }
+
+    const imageUrl = new URL(`/api/rooms/${code}/images/${encodeURIComponent(playerId)}`, request.url).toString();
+    const imageRequest = new Request(imageUrl, { method: "GET" });
+    const imageResponse = await generateImage(env, finalPrompt, hash(`${code}:${playerId}`));
+    await (await imageCache()).put(imageRequest, imageResponse.clone());
+
+    const ready = await roomAction(room, "entry-ready", {
+      playerId,
+      originalImageKey: `cache/${code}/${playerId}`,
+      imageUrl
+    });
+    if (!ready.ok) {
+      await roomAction(room, "entry-failed", { playerId, error: "Image generation finished too late." });
+    }
+    return ready;
+  } catch (error) {
+    await roomAction(room, "entry-failed", { playerId, error: "Workers AI could not generate this image." }).catch(
+      () => undefined
+    );
+    console.error("Image generation failed", {
+      code,
+      playerId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return json({ error: "Workers AI could not generate this image." }, 502);
+  }
+}
+
+async function generatedImage(
+  request: Request,
+  env: Env,
+  room: DurableObjectStub,
+  code: string,
+  playerId: string
+): Promise<Response> {
+  const cache = await imageCache();
+  const cached = await cache.match(request);
+  if (cached) {
+    return cached;
+  }
+
+  const stateResponse = await room.fetch(new Request("https://room.internal/state"));
+  const snapshot = await stateResponse.json<unknown>().catch(() => undefined);
+  const finalPrompt = readFinalPrompt(snapshot, playerId);
+  if (!stateResponse.ok || !finalPrompt) {
+    return json({ error: "Image not found." }, 404);
+  }
+
+  try {
+    const response = await generateImage(env, finalPrompt, hash(`${code}:${playerId}`));
+    await cache.put(request, response.clone());
+    return response;
+  } catch (error) {
+    console.error("Image regeneration failed", {
+      code,
+      playerId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return json({ error: "Image is temporarily unavailable." }, 502);
+  }
+}
+
+async function generateImage(env: Env, prompt: string, seed: number): Promise<Response> {
+  const form = new FormData();
+  form.append("prompt", prompt);
+  form.append("width", "1024");
+  form.append("height", "1024");
+  form.append("seed", String(seed));
+
+  const serialized = new Response(form);
+  const contentType = serialized.headers.get("content-type");
+  if (!serialized.body || !contentType) {
+    throw new Error("Could not serialize image prompt.");
+  }
+
+  const result = await env.AI.run("@cf/black-forest-labs/flux-2-klein-4b", {
+    multipart: {
+      body: serialized.body,
+      contentType
+    }
+  });
+  if (!result.image) {
+    throw new Error("Workers AI returned no image.");
+  }
+
+  const bytes = decodeBase64(result.image);
+  const body = Uint8Array.from(bytes).buffer;
+  return new Response(body, {
+    headers: {
+      "cache-control": "public, max-age=3600",
+      "content-type": imageContentType(bytes),
+      "x-content-type-options": "nosniff"
+    }
+  });
+}
+
+function imageCache(): Promise<Cache> {
+  return caches.open("prompt-royale-images-v1");
+}
+
+function readFinalPrompt(snapshot: unknown, playerId: string): string | null {
+  if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
+    return null;
+  }
+
+  const entry = snapshot.entries[playerId];
+  return isRecord(entry) && typeof entry.finalPrompt === "string" ? entry.finalPrompt : null;
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function imageContentType(bytes: Uint8Array): string {
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+    return "image/webp";
+  }
+  return "application/octet-stream";
 }
 
 async function roomAction(room: DurableObjectStub, action: string, payload: Record<string, unknown>): Promise<Response> {

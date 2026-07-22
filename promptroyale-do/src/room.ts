@@ -323,10 +323,9 @@ export class Room extends DurableObject<Env> {
       return problem("At least two players are required.", 409);
     }
 
-    const now = Date.now();
-    room.phase = "countdown";
+    room.phase = "prompting";
     room.creativeBrief = creativeBrief;
-    room.countdownEndsAt = now + COUNTDOWN_MS;
+    room.countdownEndsAt = null;
     room.promptEndsAt = null;
     room.generationEndsAt = null;
     room.votingEndsAt = null;
@@ -336,8 +335,8 @@ export class Room extends DurableObject<Env> {
     room.tieBreakApplied = false;
     room.completedAt = null;
 
-    await this.persistAndBroadcast(room, "countdown.started");
-    return json(this.snapshot(room, "countdown.started"));
+    await this.persistAndBroadcast(room, "prompting.started");
+    return json(this.snapshot(room, "prompting.started"));
   }
 
   private async reserveEntry(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {

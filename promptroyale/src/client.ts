@@ -9,7 +9,13 @@ export const appClient = String.raw`
   const waitingCopy = ["Waiting for victim...", "Grab a friend!", "Your weird pal goes here", "Definitely not a trap"];
   let socket;
   let reconnectTimer;
+  let phaseTimer;
   let activeRoomCode;
+  let latestSnapshot;
+  let mediaRecorder;
+  let mediaStream;
+  let recordingTimer;
+  let audioChunks = [];
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>\"]/g, (character) => {
@@ -366,8 +372,210 @@ export const appClient = String.raw`
           '<strong>' + snapshot.players.length + ' / ' + snapshot.capacity + ' chaos agents ready</strong>' +
           '<p>' + readyMessage + '</p>' +
         '</div></div>' +
-        '<span class="host-chip">' + (isHost ? "You have the host seat" : snapshot.leader ? escapeHtml(snapshot.leader.name) + " is hosting" : "Waiting for host") + '</span>' +
+        '<div class="host-actions"><span class="host-chip">' + (isHost ? "You have the host seat" : snapshot.leader ? escapeHtml(snapshot.leader.name) + " is hosting" : "Waiting for host") + '</span>' +
+          (isHost ? '<button class="button pink small" id="start-game" type="button"' + (snapshot.players.length < 2 ? ' disabled' : '') + '>Start game</button>' : '') +
+        '</div>' +
       '</div>';
+
+    const startButton = document.querySelector("#start-game");
+    if (startButton) {
+      startButton.addEventListener("click", async () => {
+        setBusy(startButton, true, "Starting...");
+        try {
+          await postAction(activeRoomCode, "start", {});
+        } catch (error) {
+          setBusy(startButton, false, "Start game");
+          window.alert(error instanceof Error ? error.message : "Could not start the game.");
+        }
+      });
+    }
+  }
+
+  async function postAction(code, action, fields) {
+    const response = await fetch("/api/rooms/" + code + "/actions/" + action, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(Object.assign({
+        playerId: getPlayerId(),
+        sessionToken: getRoomToken(code)
+      }, fields))
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "That move did not work.");
+    return payload;
+  }
+
+  function phaseHeading(code, label, title, copy, deadline) {
+    return '<div class="game-head"><div><span class="badge purple">Room ' + escapeHtml(code) + ' / ' + escapeHtml(label) + '</span>' +
+      '<h1 class="display-title">' + title + '</h1><p class="subcopy">' + copy + '</p></div>' +
+      (deadline ? '<div class="game-clock" id="game-clock">--</div>' : '') + '</div>';
+  }
+
+  function startClock(deadline) {
+    window.clearInterval(phaseTimer);
+    if (!deadline) return;
+    const update = () => {
+      const clock = document.querySelector("#game-clock");
+      if (clock) clock.textContent = Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "s";
+    };
+    update();
+    phaseTimer = window.setInterval(update, 250);
+  }
+
+  function entryCard(player, index, snapshot, mode) {
+    const entry = snapshot.entries[player.id] || { status: "listening" };
+    const isSelf = player.id === getPlayerId();
+    const hasVoted = snapshot.votedPlayerIds.includes(getPlayerId());
+    const image = entry.status === "ready" && entry.imageUrl
+      ? '<img class="entry-image" src="' + escapeHtml(entry.imageUrl) + '" alt="Generated entry by ' + escapeHtml(player.name) + '">'
+      : '<div class="entry-placeholder"><strong>' + escapeHtml(entry.status) + '</strong><span>' + (entry.error ? escapeHtml(entry.error) : "AI is working...") + '</span></div>';
+    const transcript = entry.transcript ? '<p class="entry-prompt">&ldquo;' + escapeHtml(entry.transcript) + '&rdquo;</p>' : '';
+    const voteButton = mode === "voting" && entry.status === "ready" && !isSelf && !hasVoted
+      ? '<button class="button small vote-button" data-candidate="' + escapeHtml(player.id) + '" type="button">Vote for this</button>'
+      : '';
+    const votes = mode === "results" ? '<strong class="vote-total">' + entry.voteCount + ' vote' + (entry.voteCount === 1 ? '' : 's') + '</strong>' : '';
+    const winner = snapshot.winnerPlayerId === player.id ? '<span class="winner-ribbon">Winner!</span>' : '';
+
+    return '<article class="entry-card tone-' + (index % 4) + '">' + winner + image +
+      '<div class="entry-copy"><h2>' + escapeHtml(player.name) + (isSelf ? ' <small>(you)</small>' : '') + '</h2>' + transcript + votes + voteButton + '</div></article>';
+  }
+
+  function arena(snapshot, mode) {
+    return '<div class="entry-grid">' + snapshot.players.map((player, index) => entryCard(player, index, snapshot, mode)).join("") + '</div>';
+  }
+
+  function renderCountdown(code, snapshot) {
+    frame('<section class="screen game-screen"><div class="game-wrap">' +
+      phaseHeading(code, "Countdown", "Get ready!", "The shared brief is about to drop.", snapshot.countdownEndsAt) +
+      '<div class="countdown-burst">Prompt incoming</div></div></section>', "Countdown", true);
+    startClock(snapshot.countdownEndsAt);
+  }
+
+  function renderPrompting(code, snapshot) {
+    const ownEntry = snapshot.entries[getPlayerId()];
+    const canSubmit = ownEntry && ownEntry.status === "listening";
+    frame('<section class="screen game-screen"><div class="game-wrap">' +
+      phaseHeading(code, "Prompting", "Add your twist", "Voting starts after everyone finishes.", snapshot.promptEndsAt) +
+      '<section class="brief-card"><small>Shared brief</small><strong>' + escapeHtml(snapshot.creativeBrief) + '</strong></section>' +
+      (canSubmit ? '<form class="prompt-form" id="prompt-form"><label for="twist-input">Your visual twist</label><div class="prompt-row"><input class="text-input" id="twist-input" maxlength="500" placeholder="but it is a 1980s action movie" required><button class="button pink" type="submit">Generate text</button></div><div class="voice-row"><span>or say it out loud</span><button class="button purple" id="speech-button" type="button">Record voice</button></div><p id="prompt-feedback" class="feedback"></p></form>' : '<div class="waiting-banner">Your prompt is locked in. Watch the room cook.</div>') +
+      arena(snapshot, "prompting") + '</div></section>', "Prompting", true);
+    startClock(snapshot.promptEndsAt);
+
+    const form = document.querySelector("#prompt-form");
+    if (form) {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const input = document.querySelector("#twist-input");
+        const button = form.querySelector("button");
+        const transcript = String(input.value || "").trim();
+        if (!transcript) return;
+        setBusy(button, true, "AI is cooking...");
+        try {
+          await postAction(code, "submit", { transcript });
+        } catch (error) {
+          setFeedback("prompt-feedback", error instanceof Error ? error.message : "Image generation failed.");
+          setBusy(button, false, "Generate");
+        }
+      });
+
+      document.querySelector("#speech-button").addEventListener("click", (event) => toggleRecording(code, event.currentTarget));
+    }
+  }
+
+  async function toggleRecording(code, button) {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+      return;
+    }
+
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+      mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+      audioChunks = [];
+      mediaRecorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) audioChunks.push(event.data);
+      });
+      mediaRecorder.addEventListener("stop", async () => {
+        window.clearTimeout(recordingTimer);
+        mediaStream.getTracks().forEach((track) => track.stop());
+        const audio = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+        button.disabled = true;
+        button.textContent = "Transcribing...";
+        const body = new FormData();
+        body.append("playerId", getPlayerId());
+        body.append("sessionToken", getRoomToken(code));
+        body.append("audio", audio, "prompt.webm");
+        try {
+          const response = await fetch("/api/rooms/" + code + "/actions/speech", { method: "POST", body });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Speech generation failed.");
+        } catch (error) {
+          setFeedback("prompt-feedback", error instanceof Error ? error.message : "Speech generation failed.");
+          button.disabled = false;
+          button.textContent = "Record voice";
+        } finally {
+          mediaRecorder = undefined;
+          mediaStream = undefined;
+          audioChunks = [];
+        }
+      });
+      mediaRecorder.start();
+      button.textContent = "Stop & generate";
+      recordingTimer = window.setTimeout(() => {
+        if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
+      }, 10000);
+    } catch {
+      setFeedback("prompt-feedback", "Microphone access is required for voice prompts.");
+    }
+  }
+
+  function renderGenerating(code, snapshot) {
+    frame('<section class="screen game-screen"><div class="game-wrap">' +
+      phaseHeading(code, "Generating", "AI is cooking", "Images reveal as soon as they are ready.", snapshot.generationEndsAt) +
+      '<section class="brief-card"><small>Shared brief</small><strong>' + escapeHtml(snapshot.creativeBrief) + '</strong></section>' +
+      arena(snapshot, "generating") + '</div></section>', "Generating", true);
+    startClock(snapshot.generationEndsAt);
+  }
+
+  function renderVoting(code, snapshot) {
+    const hasVoted = snapshot.votedPlayerIds.includes(getPlayerId());
+    frame('<section class="screen game-screen"><div class="game-wrap">' +
+      phaseHeading(code, "Voting", "Pick the chaos", hasVoted ? "Vote locked. Waiting for the room." : "Choose your favorite. You cannot vote for yourself.", snapshot.votingEndsAt) +
+      arena(snapshot, "voting") + '</div></section>', "Voting", true);
+    startClock(snapshot.votingEndsAt);
+    document.querySelectorAll(".vote-button").forEach((button) => {
+      button.addEventListener("click", async () => {
+        setBusy(button, true, "Voting...");
+        try {
+          await postAction(code, "vote", { candidatePlayerId: button.dataset.candidate });
+        } catch (error) {
+          window.alert(error instanceof Error ? error.message : "Vote failed.");
+          setBusy(button, false, "Vote for this");
+        }
+      });
+    });
+  }
+
+  function renderResults(code, snapshot) {
+    const winner = snapshot.players.find((player) => player.id === snapshot.winnerPlayerId);
+    frame('<section class="screen game-screen"><div class="game-wrap">' +
+      phaseHeading(code, "Results", winner ? escapeHtml(winner.name) + " wins!" : "No winner", snapshot.tieBreakApplied ? "A tie was broken by room join order." : "The room has spoken.", null) +
+      arena(snapshot, "results") + '<a class="button purple play-again" href="/">Play again</a></div></section>', "Results", true);
+  }
+
+  function renderRoomState(code, snapshot) {
+    latestSnapshot = snapshot;
+    window.clearInterval(phaseTimer);
+    if (snapshot.phase === "lobby") {
+      if (!document.querySelector("#lobby-content")) renderRoomShell(code);
+      renderLobby(snapshot);
+    } else if (snapshot.phase === "countdown") renderCountdown(code, snapshot);
+    else if (snapshot.phase === "prompting") renderPrompting(code, snapshot);
+    else if (snapshot.phase === "generating") renderGenerating(code, snapshot);
+    else if (snapshot.phase === "voting") renderVoting(code, snapshot);
+    else renderResults(code, snapshot);
+    updateConnection(socket && socket.readyState === WebSocket.OPEN ? "Live" : "Connecting", socket && socket.readyState === WebSocket.OPEN ? "live" : "");
   }
 
   function updateConnection(label, state) {
@@ -422,6 +630,7 @@ export const appClient = String.raw`
       updateConnection("Room full", "error");
       return;
     }
+    renderRoomState(code, snapshot);
     connectRoom(code);
   }
 
@@ -440,7 +649,7 @@ export const appClient = String.raw`
     socket.addEventListener("message", (event) => {
       try {
         const snapshot = JSON.parse(event.data);
-        if (snapshot.type === "room_state") renderLobby(snapshot);
+        if (snapshot.type === "room_state") renderRoomState(code, snapshot);
       } catch {
         updateConnection("Sync error", "error");
       }
@@ -485,7 +694,7 @@ export const appClient = String.raw`
       return;
     }
 
-    renderLobby(snapshot);
+    renderRoomState(code, snapshot);
     connectRoom(code);
   }
 

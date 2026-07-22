@@ -17,8 +17,8 @@ Every player receives the same creative brief and records one short voice prompt
 1. A group leader creates a room.
 2. Players join through a room link or six-character code.
 3. The leader starts when two to four players have joined.
-4. The room shows a five-second countdown, then reveals one shared creative brief.
-5. Every player has a twenty-second prompt window to record and upload one short voice clip.
+4. Starting the game immediately reveals one shared creative brief.
+5. Every player types a twist or records one short voice clip.
 6. Each player's panel moves through listening, transcribing, generating, ready, or failed states.
 7. Images reveal independently as they become ready.
 8. Voting begins when every submitted image job has finished or failed, or when the generation timeout expires.
@@ -32,9 +32,7 @@ Every player receives the same creative brief and records one short voice prompt
 - The first joined player is the group leader.
 - A room has one active round and cannot be restarted after reaching results.
 - The leader can start only from the lobby and only when at least two players have joined.
-- The countdown lasts five seconds.
 - Voice clips are limited to ten seconds.
-- The shared prompt window lasts twenty seconds.
 - Each player may submit one voice clip and create one image entry.
 - Every image prompt combines the shared creative brief with that player's transcription.
 - Generation jobs run independently and may finish in any order.
@@ -65,14 +63,9 @@ Every player receives the same creative brief and records one short voice prompt
 
 All views must remain usable on desktop and mobile. The arena is optimized for a projector-friendly 2 x 2 grid, while a player's mobile view keeps join, hold-to-talk, and vote as the primary controls.
 
-### Countdown
-
-- Show a shared five-second countdown.
-- Keep the creative brief hidden until the countdown ends.
-
 ### Prompting
 
-- Show the shared creative brief and remaining prompt time.
+- Show the shared creative brief.
 - Let each player hold a button to record one short voice prompt.
 - Upload the clip when the button is released.
 - Show each player's current entry status.
@@ -108,6 +101,13 @@ All views must remain usable on desktop and mobile. The arena is optimized for a
 | R2 | Stores original generated-image binaries under room and entry keys |
 | Cloudflare Images | Stores display-ready images and provides delivery URLs |
 | D1 | Stores completed-room metadata, entries, votes, and the winner |
+
+### MVP Model Configuration
+
+- Image generation: `@cf/black-forest-labs/flux-2-klein-4b` through the public Worker's Workers AI binding.
+- Prompt input: players may type a twist or record a short browser audio clip.
+- Speech-to-text: `@cf/openai/whisper-large-v3-turbo` through the public Worker's Workers AI binding.
+- The image model receives the Durable Object's exact final prompt, using a 1024 x 1024 output and a deterministic seed per room entry.
 
 ### Workers AI Models
 
@@ -161,13 +161,11 @@ The Durable Object stores authoritative game state and metadata. It does not sto
 1. The leader sends `start round` to the public Worker.
 2. The Worker forwards the action and curated creative brief to the room's Durable Object.
 3. The Durable Object validates the leader, player count, and current phase.
-4. The Durable Object records the brief and countdown deadline, then broadcasts the countdown state.
-5. A Durable Object alarm advances the room to prompting after five seconds.
-6. The Durable Object records the prompt deadline and broadcasts the revealed brief.
+4. The Durable Object records the brief, enters prompting, and immediately broadcasts the revealed brief.
 
 ### Turn Voice Into an Image
 
-1. A player records and uploads one short audio clip to the public Worker before the prompt deadline.
+1. A player submits typed text or records and uploads one short audio clip to the public Worker.
 2. The Worker asks the Durable Object to reserve that player's one submission.
 3. The Durable Object marks the entry `transcribing` and broadcasts its status.
 4. The Worker sends the clip to Workers AI for transcription.
@@ -179,13 +177,10 @@ The Durable Object stores authoritative game state and metadata. It does not sto
 10. The Durable Object marks the entry `ready` and broadcasts the updated room state.
 11. A failed transcription or image job is reported as `failed` with a safe display message.
 
-### Close Submissions and Start Voting
+### Start Voting
 
-1. A Durable Object alarm closes the prompt window after twenty seconds.
-2. Players who did not submit are marked `failed` with a missed-deadline reason.
-3. The room enters `generating` while submitted jobs are still in progress.
-4. Voting starts as soon as every entry is ready or failed.
-5. If jobs remain in progress at the generation deadline, the alarm marks them failed and starts voting.
+1. Each entry moves through transcription and generation independently.
+2. Voting starts as soon as every player entry is ready or failed.
 
 ### Vote and Finish
 
@@ -202,7 +197,7 @@ The Durable Object stores authoritative game state and metadata. It does not sto
 Room
 - code
 - createdAt
-- phase: lobby | countdown | prompting | generating | voting | results
+- phase: lobby | prompting | generating | voting | results
 - players[4]
   - id
   - name
@@ -210,9 +205,6 @@ Room
   - online
 - leaderId
 - creativeBrief
-- countdownEndsAt
-- promptEndsAt
-- generationEndsAt
 - votingEndsAt
 - entries[playerId]
   - status: listening | transcribing | generating | ready | failed
@@ -233,8 +225,8 @@ One room code maps to one Durable Object. This keeps phase transitions, timers, 
 
 The public Worker forwards these authenticated room actions:
 
-- `start`: leader starts the countdown with a curated creative brief.
-- `reserve-entry`: player claims their one submission before the prompt deadline.
+- `start`: leader immediately starts prompting with a curated creative brief.
+- `reserve-entry`: player claims their one submission.
 - `entry-generating`: Worker reports a successful transcript and the final generation prompt.
 - `entry-ready`: Worker reports the R2 key and Cloudflare Images delivery URL.
 - `entry-failed`: Worker reports a safe failure message.
@@ -251,7 +243,6 @@ For local demos without Workers AI, the public Worker exposes a `mock-entry` act
 The Durable Object broadcasts these events with the latest complete room state:
 
 - `room.updated`
-- `countdown.started`
 - `prompting.started`
 - `entry.updated`
 - `generating.started`
@@ -264,10 +255,7 @@ The browser redraws from the included room state after any event. A reconnecting
 
 | Timer | Duration | Owner |
 | --- | --- | --- |
-| Countdown | 5 seconds | Durable Object alarm |
-| Prompt window | 20 seconds | Durable Object alarm |
 | Maximum voice clip | 10 seconds | Browser and public Worker validation |
-| Generation grace period | 60 seconds after prompting closes | Durable Object alarm |
 | Voting window | 30 seconds | Durable Object alarm |
 
 ## 12. Four-Hour Build Order
