@@ -8,41 +8,47 @@ Source: [PRD](./PROMPT_ROYALE_PRD.md)
 
 ## 1. Experience
 
-Prompt Royale is a desktop multiplayer image-editing game for up to four players.
+Prompt Royale is a live multiplayer image-generation game for two to four players.
 
-Every round starts with one shared image and theme. Players take short push-to-talk turns describing an edit. Each edit creates a separate image branch. The room votes, and the winning branch becomes the shared image for the next round.
-
-The game runs for two or three rounds, then shows the full image evolution and final winner.
+Every player receives the same creative brief and records one short voice prompt that adds a visual twist. The game generates one image per player from the shared brief and that player's transcription. The room votes once and reveals one winner.
 
 ## 2. Game Flow
 
-1. A host creates a room.
-2. Players join on desktop through a room link or code.
-3. The host starts when two to four players have joined.
-4. The room shows one base image, one theme, and the turn order.
-5. Each player records a short voice edit during their turn.
-6. The player's panel moves through transcription, generation, and ready states.
-7. After every branch is ready, players vote for their favorite.
-8. The winning image becomes the base image for the next round.
-9. After the final round, the arena shows the winning image and evolution tree.
+1. A group leader creates a room.
+2. Players join through a room link or six-character code.
+3. The leader starts when two to four players have joined.
+4. The room shows a five-second countdown, then reveals one shared creative brief.
+5. Every player has a twenty-second prompt window to record and upload one short voice clip.
+6. Each player's panel moves through listening, transcribing, generating, ready, or failed states.
+7. Images reveal independently as they become ready.
+8. Voting begins when every submitted image job has finished or failed, or when the generation timeout expires.
+9. Each player who has another ready image available may cast one vote.
+10. The room reveals the winning image, vote count, and final prompt.
+11. The completed result and image references are persisted for the post-game gallery.
 
 ## 3. Game Rules
 
-- Maximum of four players.
-- Two rounds by default; three rounds when time permits.
-- One voice clip and one generated branch per player per round.
+- Rooms support two to four players.
+- The first joined player is the group leader.
+- A room has one active round and cannot be restarted after reaching results.
+- The leader can start only from the lobby and only when at least two players have joined.
+- The countdown lasts five seconds.
 - Voice clips are limited to ten seconds.
-- Each player has twenty seconds to start and finish their recording.
-- Turns are taken in room order.
-- Image jobs may continue while the next player records their turn.
-- Voting begins after every turn is complete and every image job has finished or failed.
-- Each player gets one vote and cannot vote for their own branch.
-- Player names and transcribed edits remain visible throughout the round.
-- The highest-voted image wins the round.
-- The Durable Object randomly selects between tied winners so the next round has one base image.
-- If every image job fails, the host may replay the round with the same base image.
+- The shared prompt window lasts twenty seconds.
+- Each player may submit one voice clip and create one image entry.
+- Every image prompt combines the shared creative brief with that player's transcription.
+- Generation jobs run independently and may finish in any order.
+- A transcription or generation failure affects only that player's entry.
+- Voting begins when all entries are ready or failed, or after the generation timeout.
+- Only ready entries may receive votes.
+- Each player with at least one ready entry they do not own gets one vote and cannot vote for their own entry.
+- Duplicate and late votes are rejected.
+- Voting closes after thirty seconds so a disconnected player cannot stall the room.
+- The highest-voted ready image wins.
+- Ties are resolved deterministically by the tied entries' room join order. The result includes the tie-break rule.
+- If no image succeeds, the room enters results with no winner and explains that all entries failed.
 
-## 4. Desktop Views
+## 4. Views
 
 ### Home
 
@@ -52,172 +58,217 @@ The game runs for two or three rounds, then shows the full image evolution and f
 
 ### Lobby
 
-- Show room code and shareable link.
+- Show the room code, shareable link, and QR code.
 - Show up to four connected players.
-- Let the host start the game.
+- Identify the group leader.
+- Let the leader start when at least two players are present.
 
-### Arena
+All views must remain usable on desktop and mobile. The arena is optimized for a projector-friendly 2 x 2 grid, while a player's mobile view keeps join, hold-to-talk, and vote as the primary controls.
 
-- Show the shared base image and theme.
-- Show four side-by-side player panels.
-- Highlight the current player and remaining turn time.
-- Show each panel's live job status.
+### Countdown
 
-### Player Turn
+- Show a shared five-second countdown.
+- Keep the creative brief hidden until the countdown ends.
 
-- Hold a button to record a short voice edit.
+### Prompting
+
+- Show the shared creative brief and remaining prompt time.
+- Let each player hold a button to record one short voice prompt.
 - Upload the clip when the button is released.
-- Show the transcribed edit in that player's panel.
-- Replace the loading panel with the generated branch when ready.
+- Show each player's current entry status.
+
+### Generating
+
+- Show the shared creative brief and all player panels.
+- Show each transcription when it becomes available.
+- Replace each loading panel with its generated image when ready.
+- Show entry-level failures without blocking other entries.
 
 ### Voting
 
-- Show all completed branches with their player names and transcribed edits.
-- Let each player select one branch.
+- Show every ready image with its player name and transcribed twist.
+- Let each player select one other player's image.
 - Show a waiting state after a vote is submitted.
 
-### Round Result
+### Results
 
 - Reveal player names, transcripts, and vote totals.
-- Highlight the winning branch.
-- Promote the winning image to the next round's base image.
-
-### Final Recap
-
-- Show the original image.
-- Show every round's branches and winner.
-- End on the final winning image.
+- Highlight the winning image and final prompt.
+- Explain the deterministic tie-break when it was used.
+- Show a no-winner result if every entry failed.
 
 ## 5. Cloudflare Products
 
 | Product | Use in Prompt Royale |
 | --- | --- |
-| Cloudflare Pages | Hosts the desktop game and projector arena UI |
-| Workers | Receives game actions, audio clips, votes, and image requests |
+| Workers | Serves the browser application, handles room and media APIs, and coordinates AI and persistence calls |
 | Durable Objects | Runs one authoritative multiplayer room per room code |
-| Durable Object WebSockets | Pushes room, turn, job, voting, and result updates to every browser |
-| Workers AI | Converts each push-to-talk audio clip into text |
-| AI Gateway | Observes and controls speech and image model calls while keeping provider keys server-side |
-| Image generation provider | Edits the current base image using the player's transcribed instruction |
-| R2 | Stores base images, generated branches, and final recap images |
+| Durable Object WebSockets | Pushes room, phase, entry, voting, and result updates to every browser |
+| Workers AI | Converts each voice clip to text and generates one image per player |
+| R2 | Stores original generated-image binaries under room and entry keys |
+| Cloudflare Images | Stores display-ready images and provides delivery URLs |
+| D1 | Stores completed-room metadata, entries, votes, and the winner |
 
 ## 6. Service Connections
 
 ```text
-                         +----> Cloudflare Pages (loads desktop UI)
-Desktop browser --------+
-                         +----> Worker API
-                                   |
-                                   +----> Durable Object
-                                   |          |
-                                   |          +---- WebSocket updates
-                                   |                    |
-                                   |                    v
-                                   |              all browsers
-                                   |
-                                   +----> AI Gateway ----> Workers AI speech-to-text
-                                   |
-                                   +----> AI Gateway ----> image editing provider
-                                   |
-                                   +----> R2 ----> Worker image response ----> browser
+Browser -----------------------> Public Worker
+                                     |
+                                     +----> Durable Object
+                                     |          |
+                                     |          +---- WebSocket updates
+                                     |                    |
+                                     |                    v
+                                     |              all browsers
+                                     |
+                                     +----> Workers AI speech-to-text
+                                     |
+                                     +----> Workers AI text-to-image
+                                     |
+                                     +----> R2 originals
+                                     |
+                                     +----> Cloudflare Images delivery assets
+                                     |
+                                     +----> D1 completed-game records
 ```
 
-The Durable Object stores game state and metadata. It does not store audio or image bytes.
+The Durable Object stores authoritative game state and metadata. It does not store audio or image bytes. D1 is not used for live timers, entry status, voting, or winner selection.
 
 ## 7. Main Data Flows
 
 ### Create and Join a Room
 
-1. The browser UI loaded from Pages sends the player's name to the Worker.
+1. The browser sends the player's display name to the public Worker.
 2. The Worker creates or looks up a Durable Object using the room code.
-3. The Durable Object adds the player and returns the current room state.
-4. The browser opens a WebSocket to receive live updates.
-5. The Durable Object broadcasts the updated player list.
+3. The browser opens a WebSocket with its player identity.
+4. The Durable Object adds the player, assigns the leader when needed, and broadcasts the updated room state.
 
-### Start a Round
+### Start the Round
 
-1. The host sends `start round` to the Worker.
-2. The Worker forwards the action to the room's Durable Object.
-3. Round one uses a fixed theme and starting image stored in R2 for the demo.
-4. The Durable Object records the theme, base image, turn order, first player, and turn deadline.
-5. The Durable Object broadcasts the new round state.
+1. The leader sends `start round` to the public Worker.
+2. The Worker forwards the action and curated creative brief to the room's Durable Object.
+3. The Durable Object validates the leader, player count, and current phase.
+4. The Durable Object records the brief and countdown deadline, then broadcasts the countdown state.
+5. A Durable Object alarm advances the room to prompting after five seconds.
+6. The Durable Object records the prompt deadline and broadcasts the revealed brief.
 
 ### Turn Voice Into an Image
 
-1. The current player records and uploads a short audio clip to the Worker.
-2. The Worker asks the Durable Object to confirm that it is that player's turn.
-3. The Worker sends the clip through AI Gateway to Workers AI for transcription.
-4. The Worker reports the transcript and `generating` status to the Durable Object.
-5. The Durable Object broadcasts the transcript, job status, and next turn.
-6. The Worker sends the base image and transcript through AI Gateway to the image provider.
-7. The Worker writes the generated image to R2.
-8. The Worker gives the R2 image key to the Durable Object.
-9. The Durable Object marks the panel `ready` and broadcasts its image URL.
+1. A player records and uploads one short audio clip to the public Worker before the prompt deadline.
+2. The Worker asks the Durable Object to reserve that player's one submission.
+3. The Durable Object marks the entry `transcribing` and broadcasts its status.
+4. The Worker sends the clip to Workers AI for transcription.
+5. The Worker reports the transcript to the Durable Object.
+6. The Durable Object combines the shared brief and transcript, records the exact final prompt, and returns it with the `generating` state.
+7. The Worker sends that returned final prompt to Workers AI for image generation.
+8. The Worker writes the original image to R2 and uploads a display-ready asset to Cloudflare Images.
+9. The Worker reports the R2 key and delivery URL to the Durable Object.
+10. The Durable Object marks the entry `ready` and broadcasts the updated room state.
+11. A failed transcription or image job is reported as `failed` with a safe display message.
 
-### Vote and Advance
+### Close Submissions and Start Voting
 
-1. Each browser sends one vote to the Worker.
+1. A Durable Object alarm closes the prompt window after twenty seconds.
+2. Players who did not submit are marked `failed` with a missed-deadline reason.
+3. The room enters `generating` while submitted jobs are still in progress.
+4. Voting starts as soon as every entry is ready or failed.
+5. If jobs remain in progress at the generation deadline, the alarm marks them failed and starts voting.
+
+### Vote and Finish
+
+1. Each browser sends one vote to the public Worker.
 2. The Worker forwards the vote to the Durable Object.
-3. The Durable Object counts votes and selects the winner.
-4. The Durable Object stores the winner's R2 key as the next base image.
-5. The Durable Object broadcasts the result and either starts the next round or shows the recap.
-6. If no branches succeeded, the Durable Object keeps the current base image and returns control to the host.
+3. The Durable Object validates the phase, voter, candidate, self-vote rule, and duplicate-vote rule.
+4. Once every eligible player has voted, or the voting deadline expires, the Durable Object counts votes and resolves any tie by room join order.
+5. The Durable Object records the winner and broadcasts the results state.
+6. The public Worker reads the completed state and writes the room, entries, image references, votes, and winner to D1.
 
 ## 8. Durable Object Room State
 
 ```text
 Room
 - code
-- phase: lobby | editing | voting | result | finished
+- createdAt
+- phase: lobby | countdown | prompting | generating | voting | results
 - players[4]
-- hostPlayerId
-- roundNumber
-- totalRounds
-- theme
-- baseImageKey
-- currentTurn
-- turnEndsAt
-- branches[playerId]
+  - id
+  - name
+  - joinedAt
+  - online
+- leaderId
+- creativeBrief
+- countdownEndsAt
+- promptEndsAt
+- generationEndsAt
+- votingEndsAt
+- entries[playerId]
+  - status: listening | transcribing | generating | ready | failed
   - transcript
-  - status: waiting | transcribing | generating | ready | failed
-  - imageKey
+  - finalPrompt
+  - originalImageKey
+  - imageUrl
+  - error
 - votes[playerId]
-- roundHistory[]
+- winnerPlayerId
+- tieBreakApplied
+- completedAt
 ```
 
-One room code maps to one Durable Object. This keeps turn order, votes, and winner selection consistent even when several players act at once.
+One room code maps to one Durable Object. This keeps phase transitions, timers, submissions, votes, and winner selection consistent when several players act at once.
 
-## 9. WebSocket Updates
+## 9. Durable Object Actions
 
-The Durable Object broadcasts a small set of events:
+The public Worker forwards these authenticated room actions:
+
+- `start`: leader starts the countdown with a curated creative brief.
+- `reserve-entry`: player claims their one submission before the prompt deadline.
+- `entry-generating`: Worker reports a successful transcript and the final generation prompt.
+- `entry-ready`: Worker reports the R2 key and Cloudflare Images delivery URL.
+- `entry-failed`: Worker reports a safe failure message.
+- `vote`: player votes for another player's ready entry.
+
+Every action returns the latest room state. Invalid actions return an HTTP `4xx` response and do not change room state.
+
+## 10. WebSocket Updates
+
+The Durable Object broadcasts these events with the latest complete room state:
 
 - `room.updated`
-- `round.started`
-- `turn.started`
-- `branch.status`
+- `countdown.started`
+- `prompting.started`
+- `entry.updated`
+- `generating.started`
 - `voting.started`
-- `round.finished`
 - `game.finished`
 
-The browser can redraw the arena from the latest room state after any event.
+The browser redraws from the included room state after any event. A reconnecting browser fetches the current state before reopening its WebSocket.
 
-## 10. Four-Hour Build Order
+## 11. Timing Defaults
+
+| Timer | Duration | Owner |
+| --- | --- | --- |
+| Countdown | 5 seconds | Durable Object alarm |
+| Prompt window | 20 seconds | Durable Object alarm |
+| Maximum voice clip | 10 seconds | Browser and public Worker validation |
+| Generation grace period | 60 seconds after prompting closes | Durable Object alarm |
+| Voting window | 30 seconds | Durable Object alarm |
+
+## 12. Four-Hour Build Order
 
 | Time | Build |
 | --- | --- |
-| 0:00-0:45 | Pages desktop UI with lobby, arena panels, voting, and recap states |
-| 0:45-1:45 | Durable Object room, WebSockets, player presence, turns, and votes |
-| 1:45-2:45 | Push-to-talk upload, Workers AI transcription, and live job statuses |
-| 2:45-3:30 | Image editing provider, AI Gateway, R2 storage, and panel updates |
-| 3:30-4:00 | Round chaining, final recap, deployment, and demo rehearsal |
+| 0:00-0:45 | Worker-served UI with lobby, arena panels, voting, and result states |
+| 0:45-1:45 | Durable Object room, WebSockets, phases, alarms, submissions, and votes |
+| 1:45-2:45 | Push-to-talk upload, Workers AI transcription, and live entry statuses |
+| 2:45-3:30 | Workers AI image generation, R2, Cloudflare Images, and panel updates |
+| 3:30-4:00 | D1 completion persistence, deployment, and demo rehearsal |
 
-## 11. Not in the MVP
+## 13. Not in the MVP
 
-- Mobile layouts or QR joining.
-- Accounts, profiles, or permanent feeds.
-- Continuous voice or WebRTC.
+- Multiple rounds, image evolution, or tournaments.
+- Accounts, profiles, permanent feeds, or public galleries.
+- Continuous voice, WebRTC, or audio streaming.
 - More than four players.
-- Multiple image models.
+- Multiple image models or image-to-image editing.
+- AI Gateway, Queues, Analytics Engine, Turnstile, or Access.
 - AI-selected winners.
-- Public galleries.
-- Advanced image editing controls.
