@@ -109,6 +109,19 @@ All views must remain usable on desktop and mobile. The arena is optimized for a
 | Cloudflare Images | Stores display-ready images and provides delivery URLs |
 | D1 | Stores completed-room metadata, entries, votes, and the winner |
 
+### Workers AI Models
+
+| Stage | Capability | Model |
+| --- | --- | --- |
+| MVP | Speech transcription, including multilingual audio | `@cf/openai/whisper-large-v3-turbo` |
+| MVP | Text-to-image generation | `@cf/black-forest-labs/flux-1-schnell` |
+| Follow-on | Image editing and evolution trees | `@cf/black-forest-labs/flux-2-klein-4b` |
+| Follow-on | Prompt safety for public rooms | `@cf/meta/llama-guard-3-8b` |
+| Follow-on | Captions and share-card content | `@cf/meta/llama-4-scout-17b-16e-instruct` |
+| Follow-on | Semantic gallery search | `@cf/qwen/qwen3-embedding-0.6b` |
+
+The MVP calls only the two MVP models. Multilingual audio continues to use Whisper Turbo rather than adding another speech model.
+
 ## 6. Service Connections
 
 ```text
