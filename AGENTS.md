@@ -53,4 +53,5 @@
 
 - Add only stable, repository-wide rules, commands, and architecture decisions to this file.
 - Do not add temporary plans, task notes, or session history.
+- Record all important product, architecture, implementation, and model decisions in `DECISIONS.md` when they are made. Include the decision, rationale, status, and material tradeoffs.
 - Never commit credentials or service tokens.
