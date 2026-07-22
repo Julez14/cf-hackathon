@@ -1,0 +1,19 @@
+package-lock.json
+  s_7a27ace58b434b::t_a01e9413136df3 1172-1191,1223-1231,1350-1358,1369-1374,1443-1455,1509-1520,1542-1586,1601-1692,1702-1707,1731-1736,1875-1881,1892-1897,2061-2067
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "651a87a0615b97b2eba1122b3090c0aad17ccb36",
+  "prompts": {},
+  "sessions": {
+    "s_7a27ace58b434b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0752ca4ebffeZ3bcVXPv766UN9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "emilywang <emilywang@cloudflare.com>"
+    }
+  }
+}
