@@ -1,11 +1,11 @@
-import { Room, isRoomCode } from "./room";
 import { renderApp } from "./site";
 
 export interface Env {
-  ROOMS: DurableObjectNamespace<Room>;
+  ROOMS: DurableObjectNamespace;
 }
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 const MAX_CREATE_ATTEMPTS = 5;
 
 export default {
@@ -43,8 +43,6 @@ export default {
   }
 } satisfies ExportedHandler<Env>;
 
-export { Room };
-
 async function createRoom(env: Env): Promise<Response> {
   try {
     for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt += 1) {
@@ -80,6 +78,10 @@ function createRoomCode(): string {
   crypto.getRandomValues(values);
 
   return Array.from(values, (value) => ROOM_CODE_ALPHABET[value % ROOM_CODE_ALPHABET.length]).join("");
+}
+
+function isRoomCode(value: string): boolean {
+  return ROOM_CODE_PATTERN.test(value);
 }
 
 function json(payload: unknown, status = 200): Response {

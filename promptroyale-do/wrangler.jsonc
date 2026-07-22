@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "prompt-royale-do",
+  "main": "src/room.ts",
+  "compatibility_date": "2026-07-22",
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Room"]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

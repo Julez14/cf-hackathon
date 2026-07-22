@@ -1,5 +1,5 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
+  "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "prompt-royale",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-22",
@@ -7,16 +7,11 @@
     "bindings": [
       {
         "name": "ROOMS",
-        "class_name": "Room"
+        "class_name": "Room",
+        "script_name": "prompt-royale-do"
       }
     ]
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["Room"]
-    }
-  ],
   "observability": {
     "enabled": true
   }

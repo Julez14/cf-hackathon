@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import type { Env } from "./index";
+
+interface Env {}
 
 const MAX_PLAYERS = 4;
 const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
@@ -224,6 +225,12 @@ export class Room extends DurableObject<Env> {
     }
   }
 }
+
+export default {
+  fetch(): Response {
+    return text("Not found.", 404);
+  }
+} satisfies ExportedHandler<Env>;
 
 export function isRoomCode(value: string): boolean {
   return ROOM_CODE_PATTERN.test(value);

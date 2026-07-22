@@ -1,14 +1,21 @@
 {
-  "name": "prompt-royale",
+  "name": "prompt-royale-monorepo",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "promptroyale",
+    "promptroyale-do"
+  ],
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "generate-types": "wrangler types",
-    "typecheck": "npm run generate-types && tsc --noEmit"
+    "dev": "concurrently --kill-others --names room-do,app \"npm run dev:room-do\" \"npm run dev:app\"",
+    "dev:app": "npm run dev --workspace=@prompt-royale/app -- --port 8790 --inspector-port 9230",
+    "dev:room-do": "npm run dev --workspace=@prompt-royale/room-do -- --port 8791 --inspector-port 9231",
+    "deploy": "npm run deploy --workspace=@prompt-royale/room-do && npm run deploy --workspace=@prompt-royale/app",
+    "generate-types": "npm run generate-types --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "typescript": "^5.7.0",
     "wrangler": "^4.0.0"
   }
