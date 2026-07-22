@@ -135,7 +135,7 @@ export const appClient = String.raw`
           '<div class="hero">' +
             '<div class="hero-kicker"><span aria-hidden="true">&#127881;</span> 4 players. 1 cursed winner.</div>' +
             '<h1 class="comic-title"><span class="prompt">Prompt</span><span class="royale">Royale</span></h1>' +
-            '<p class="hero-copy">Yell a twist. Watch AI cook. Vote for the beautiful disaster.</p>' +
+            '<p class="hero-copy">Everyone starts with the same idea. Add twists to evolve your own AI image, then vote for the best result.</p>' +
             '<div class="tag-row" aria-label="Game features"><span class="tag">VOICE</span><span class="tag">AI ART</span><span class="tag">BAD IDEAS</span></div>' +
           '</div>' +
           '<section class="gate-card party-panel" aria-label="Create or join a room">' +
@@ -163,6 +163,7 @@ export const appClient = String.raw`
             '</div>' +
           '</section>' +
         '</div>' +
+        '<section class="how-to-play"><div class="gallery-head"><span class="badge purple">New here?</span><h2>How to play</h2></div><div class="how-steps"><article><b>1</b><strong>Join</strong><span>Create a room or enter your friend\'s six-letter code.</span></article><article><b>2</b><strong>Add twists</strong><span>Type or record a change you want to see in your image.</span></article><article><b>3</b><strong>Evolve</strong><span>Keep adding twists and regenerating until time runs out.</span></article><article><b>4</b><strong>Vote</strong><span>Pick another player\'s best image. Most votes wins.</span></article></div></section>' +
         '<section class="player-record" id="player-record"><strong>Your record</strong><span>Loading...</span></section>' +
         '<section class="leaderboard"><div class="gallery-head"><span class="badge purple">Leaderboard</span><h2>Royal standings</h2></div><div id="leaderboard-list"><p>Counting victories...</p></div></section>' +
         '<section class="winner-gallery"><div class="gallery-head"><span class="badge purple">Hall of fame</span><h2>Past champions</h2></div><div class="gallery-grid" id="gallery-grid"><p>Summoning winners...</p></div></section>' +
@@ -416,13 +417,13 @@ export const appClient = String.raw`
       : "The court is assembled and ready for the first round.";
 
     lobby.innerHTML = '<div class="player-grid">' + cards.concat(empty).join("") + '</div>' +
-      '<div class="lobby-footer">' +
+      '<div class="lobby-guide"><b>Next:</b> The host chooses a timer and starts. Then everyone gets the same base idea and builds their own image.</div><div class="lobby-footer">' +
         '<div class="ready-copy"><span class="phone-icon" aria-hidden="true">&#128241;</span><div>' +
           '<strong>' + snapshot.players.length + ' / ' + snapshot.capacity + ' chaos agents ready</strong>' +
           '<p>' + readyMessage + '</p>' +
         '</div></div>' +
         '<div class="host-actions"><span class="host-chip">' + (isHost ? "You have the host seat" : snapshot.leader ? escapeHtml(snapshot.leader.name) + " is hosting" : "Waiting for host") + '</span>' +
-          (isHost ? '<label class="timer-setting">Round timer<select id="round-duration"><option value="20"' + (selectedRoundDuration === 20 ? ' selected' : '') + '>20 seconds</option><option value="60"' + (selectedRoundDuration === 60 ? ' selected' : '') + '>1 minute</option><option value="90"' + (selectedRoundDuration === 90 ? ' selected' : '') + '>1:30</option><option value="120"' + (selectedRoundDuration === 120 ? ' selected' : '') + '>2 minutes</option><option value="180"' + (selectedRoundDuration === 180 ? ' selected' : '') + '>3 minutes</option><option value="300"' + (selectedRoundDuration === 300 ? ' selected' : '') + '>5 minutes</option></select></label><button class="button pink small" id="start-game" type="button"' + (snapshot.players.length < 2 ? ' disabled' : '') + '>Start game</button>' : '') +
+          (isHost ? '<label class="timer-setting">Round timer<select id="round-duration"><option value="60"' + (selectedRoundDuration === 60 ? ' selected' : '') + '>1 minute</option><option value="90"' + (selectedRoundDuration === 90 ? ' selected' : '') + '>1:30</option><option value="120"' + (selectedRoundDuration === 120 ? ' selected' : '') + '>2 minutes</option><option value="180"' + (selectedRoundDuration === 180 ? ' selected' : '') + '>3 minutes</option><option value="300"' + (selectedRoundDuration === 300 ? ' selected' : '') + '>5 minutes</option></select></label><button class="button pink small" id="start-game" type="button"' + (snapshot.players.length < 2 ? ' disabled' : '') + '>Start game</button>' : '') +
         '</div>' +
       '</div>';
 
@@ -459,8 +460,9 @@ export const appClient = String.raw`
   }
 
   function phaseHeading(code, label, title, copy, deadline) {
+    const step = label === "Voting" ? "Step 3 of 3" : label === "Results" ? "Finished" : "Step 2 of 3";
     return '<div class="game-head"><div><span class="badge purple">Room ' + escapeHtml(code) + ' / ' + escapeHtml(label) + '</span>' +
-      '<h1 class="display-title">' + title + '</h1><p class="subcopy">' + copy + '</p></div>' +
+      '<span class="step-label">' + step + '</span><h1 class="display-title">' + title + '</h1><p class="subcopy">' + copy + '</p></div>' +
       (deadline ? '<div class="game-clock" id="game-clock">--</div>' : '') + '</div>';
   }
 

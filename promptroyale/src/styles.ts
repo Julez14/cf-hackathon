@@ -222,6 +222,12 @@ a { color: inherit; }
 .gallery-card div { display: grid; padding: 11px; gap: 3px; }
 .gallery-card strong { font-family: Impact, "Arial Black", sans-serif; font-size: 1rem; text-transform: uppercase; }
 .gallery-card span { color: rgba(23, 18, 33, 0.62); font-size: 0.65rem; font-weight: 850; text-transform: uppercase; }
+.how-to-play { margin-top: 46px; padding: 24px; background: var(--white); border: 4px solid var(--ink); border-radius: 28px; box-shadow: 9px 9px 0 var(--ink); }
+.how-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
+.how-steps article { display: grid; min-height: 155px; padding: 15px; align-content: start; gap: 8px; background: var(--lilac); border: 3px solid var(--ink); border-radius: 17px; }
+.how-steps b { display: grid; width: 38px; height: 38px; place-items: center; color: var(--white); background: var(--pink); border: 3px solid var(--ink); border-radius: 11px; box-shadow: 2px 2px 0 var(--ink); font-family: Impact, "Arial Black", sans-serif; }
+.how-steps strong { font-family: Impact, "Arial Black", sans-serif; font-size: 1.15rem; text-transform: uppercase; }
+.how-steps span { color: rgba(23, 18, 33, 0.7); font-size: 0.78rem; font-weight: 750; line-height: 1.4; }
 
 .hero { position: relative; text-align: left; transform: rotate(-1deg); }
 
@@ -442,8 +448,8 @@ a { color: inherit; }
 
 .button {
   display: inline-flex;
-  min-height: 52px;
-  padding: 0 20px;
+  min-height: 62px;
+  padding: 0 25px;
   align-items: center;
   justify-content: center;
   gap: 9px;
@@ -453,7 +459,7 @@ a { color: inherit; }
   border-radius: 15px;
   box-shadow: 4px 4px 0 var(--ink);
   font-family: Impact, "Arial Black", sans-serif;
-  font-size: 0.78rem;
+  font-size: 0.9rem;
   letter-spacing: 0.035em;
   line-height: 1;
   text-decoration: none;
@@ -469,7 +475,7 @@ a { color: inherit; }
 .button.purple { color: var(--white); background: var(--purple); }
 .button.pink { color: var(--white); background: var(--pink); }
 .button.white { background: var(--white); }
-.button.small { min-height: 44px; padding: 0 14px; font-size: 0.69rem; }
+.button.small { min-height: 50px; padding: 0 17px; font-size: 0.75rem; }
 
 .code-inputs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
 
@@ -735,6 +741,7 @@ a { color: inherit; }
 
 .host-chip { padding: 9px 12px; background: var(--yellow); border: 3px solid var(--ink); border-radius: 11px; box-shadow: 3px 3px 0 var(--ink); font-size: 0.68rem; font-weight: 950; text-transform: uppercase; }
 .host-actions { display: flex; align-items: center; gap: 12px; }
+.lobby-guide { margin-top: 22px; padding: 14px 17px; background: var(--yellow); border: 3px solid var(--ink); border-radius: 15px; box-shadow: 4px 4px 0 var(--ink); font-size: 0.82rem; font-weight: 800; }
 .timer-setting { display: grid; gap: 3px; font-size: 0.58rem; font-weight: 950; letter-spacing: 0.04em; text-transform: uppercase; }
 .timer-setting select { min-height: 40px; padding: 0 30px 0 11px; color: var(--ink); background: var(--white); border: 3px solid var(--ink); border-radius: 10px; box-shadow: 3px 3px 0 var(--ink); font: inherit; }
 
@@ -742,6 +749,7 @@ a { color: inherit; }
 .game-wrap { width: 100%; }
 .game-head { display: flex; margin-bottom: 22px; align-items: center; justify-content: space-between; gap: 24px; }
 .game-head .display-title { color: var(--pink); text-shadow: 3px 3px 0 var(--ink); }
+.step-label { display: block; margin: 10px 0 7px; color: var(--purple); font-size: 0.75rem; font-weight: 950; letter-spacing: 0.08em; text-transform: uppercase; }
 .game-clock { display: grid; width: 112px; height: 92px; flex: none; place-items: center; color: var(--white); background: var(--purple); border: 4px solid var(--ink); border-radius: 24px; box-shadow: 7px 7px 0 var(--ink); font-family: Impact, "Arial Black", sans-serif; font-size: 2.4rem; transform: rotate(2deg); }
 .countdown-burst { display: grid; min-height: 430px; place-items: center; color: var(--white); background: var(--pink); border: 5px solid var(--ink); border-radius: 40px; box-shadow: 12px 12px 0 var(--ink); font-family: Impact, "Arial Black", sans-serif; font-size: clamp(3.2rem, 10vw, 7rem); text-align: center; text-shadow: 6px 6px 0 var(--ink); text-transform: uppercase; transform: rotate(-1deg); }
 .brief-card { display: flex; margin-bottom: 22px; padding: 18px 22px; align-items: center; gap: 18px; background: var(--yellow); border: 4px solid var(--ink); border-radius: 22px; box-shadow: 6px 6px 0 var(--ink); }
@@ -750,6 +758,7 @@ a { color: inherit; }
 .prompt-form { margin-bottom: 24px; padding: 20px; background: var(--mint); border: 4px solid var(--ink); border-radius: 24px; box-shadow: 7px 7px 0 var(--ink); }
 .prompt-form label { display: block; margin-bottom: 9px; font-family: Impact, "Arial Black", sans-serif; font-size: 1rem; text-transform: uppercase; }
 .prompt-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+.prompt-row .button, #speech-button, .vote-button { min-height: 68px; padding-right: 28px; padding-left: 28px; font-size: 0.95rem; }
 .voice-row { display: flex; margin-top: 12px; align-items: center; justify-content: flex-end; gap: 12px; }
 .voice-row span { color: rgba(23, 18, 33, 0.65); font-size: 0.72rem; font-weight: 900; text-transform: uppercase; }
 .voice-row.is-recording { padding: 10px 12px; justify-content: space-between; background: var(--white); border: 3px solid var(--pink); border-radius: 15px; }
@@ -895,6 +904,7 @@ dialog p { margin: 7px 0 0; color: rgba(23, 18, 33, 0.68); font-size: 0.84rem; f
   .player-grid { grid-template-columns: 1fr; }
   .player-card { min-height: 150px; }
   .game-head { align-items: flex-start; }
+  .how-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -931,6 +941,9 @@ dialog p { margin: 7px 0 0; color: rgba(23, 18, 33, 0.68); font-size: 0.84rem; f
   .voice-row { align-items: stretch; flex-direction: column; }
   .entry-grid { grid-template-columns: 1fr; }
   .gallery-grid { grid-template-columns: 1fr; }
+  .how-steps { grid-template-columns: 1fr; }
+  .how-steps article { min-height: 0; }
+  .prompt-row .button, #speech-button, .vote-button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
