@@ -30,16 +30,15 @@ The current source and Worker configurations use these Cloudflare products:
 - **Durable Objects** maintains authoritative room state, game rules, timers, persistence, and one room instance per room code.
 - **Durable Object WebSockets** broadcasts lobby, prompt, generation, voting, and results updates to connected browsers.
 - **Workers AI** transcribes voice prompts with Whisper and generates player images with FLUX.2 [klein] 4B.
-- **Workers Cache API** temporarily caches generated images behind same-origin Worker URLs.
+- **R2** stores generated image binaries under room, player, and image-revision keys.
+- **D1** stores completed winners, gallery records, and player statistics.
 - **Workers Observability** is enabled for both Worker deployments.
 
 ## Future Cloudflare Product Implementations
 
 These products are planned but are not wired into the current implementation:
 
-- **R2** will persist original generated-image binaries instead of relying on the temporary cache.
-- **Cloudflare Images** will store display-ready image assets and provide optimized delivery URLs.
-- **D1** will persist completed-game, gallery, recap, vote, and winner metadata.
+- **Cloudflare Images** will store display-ready image assets and provide optimized delivery URLs alongside the R2 originals.
 - **AI Gateway** will provide optional post-game recap captioning, observability, rate limiting, and fallback controls.
 - **Cloudflare Queues** will hold asynchronous post-game recap requests.
 - **Cloudflare Workflows** will run and retry the isolated recap pipeline.
