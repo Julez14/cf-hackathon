@@ -1,0 +1,27 @@
+PROMPT_ROYALE_FUNCTIONAL_SPEC.md
+  s_ae34a8e6f0d36b::t_be09c465af04a6 243-244,247-248
+promptroyale-do/src/room.ts
+  s_ae34a8e6f0d36b::t_7868509b2d776a 13,50,146,177,215,227,232-236,254,302,305-310,345-351,445,447-452,687,754-773
+promptroyale-do/wrangler.jsonc
+  s_ae34a8e6f0d36b::t_29520c650e73dc 4
+promptroyale/src/index.ts
+  s_ae34a8e6f0d36b::t_b00fc5534dd4c3 10-12,14-19,44-64,111-354
+promptroyale/wrangler.jsonc
+  s_ae34a8e6f0d36b::t_b433818d477985 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "78fc44b213d83d6ece5cc32cc4a54318a9001027",
+  "prompts": {},
+  "sessions": {
+    "s_ae34a8e6f0d36b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0752a84a6ffeQZzSNAt7hA589e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Bill Wang <bwang@cloudflare.com>"
+    }
+  }
+}
