@@ -10,18 +10,18 @@ Source: [PRD](./PROMPT_ROYALE_PRD.md)
 
 Prompt Royale is a live multiplayer image-generation game for two to four players.
 
-Every player receives the same creative brief and records one short voice prompt that adds a visual twist. The game generates one image per player from the shared brief and that player's transcription. The room votes once and reveals one winner.
+Every player receives the same creative brief and repeatedly adds typed or spoken visual twists during a timed round. Each new image uses that player's full prompt history. The room votes on the latest successful images.
 
 ## 2. Game Flow
 
 1. A group leader creates a room.
 2. Players join through a room link or six-character code.
-3. The leader starts when two to four players have joined.
+3. The leader chooses a round timer and starts when two to four players have joined.
 4. Starting the game immediately reveals one shared creative brief.
-5. Every player types a twist or records one short voice clip.
+5. Every player may repeatedly type a twist or record a short voice clip until time expires.
 6. Each player's panel moves through listening, transcribing, generating, ready, or failed states.
 7. Images reveal independently as they become ready.
-8. Voting begins when every submitted image job has finished or failed, or when the generation timeout expires.
+8. Voting begins when the round timer expires.
 9. Each player who has another ready image available may cast one vote.
 10. The room reveals the winning image, vote count, and final prompt.
 11. The completed result and image references are persisted for the post-game gallery.
@@ -33,11 +33,11 @@ Every player receives the same creative brief and records one short voice prompt
 - A room has one active round and cannot be restarted after reaching results.
 - The leader can start only from the lobby and only when at least two players have joined.
 - Voice clips are limited to ten seconds.
-- Each player may submit one voice clip and create one image entry.
-- Every image prompt combines the shared creative brief with that player's transcription.
+- Each player may submit repeated typed or voice twists while no generation is already in progress.
+- Every image prompt combines the shared creative brief with all of that player's twists in order.
 - Generation jobs run independently and may finish in any order.
 - A transcription or generation failure affects only that player's entry.
-- Voting begins when all entries are ready or failed, or after the generation timeout.
+- Voting begins when the host-selected round timer expires.
 - Only ready entries may receive votes.
 - Each player with at least one ready entry they do not own gets one vote and cannot vote for their own entry.
 - Duplicate and late votes are rejected.
@@ -60,14 +60,15 @@ Every player receives the same creative brief and records one short voice prompt
 - Show up to four connected players.
 - Identify the group leader.
 - Let the leader start when at least two players are present.
+- Let the leader select a round duration between 30 seconds and five minutes.
 
 All views must remain usable on desktop and mobile. The arena is optimized for a projector-friendly 2 x 2 grid, while a player's mobile view keeps join, hold-to-talk, and vote as the primary controls.
 
 ### Prompting
 
 - Show the shared creative brief.
-- Let each player hold a button to record one short voice prompt.
-- Upload the clip when the button is released.
+- Let each player record or type repeated prompt additions.
+- Clearly show when recording is active, elapsed recording time, and how to stop.
 - Show each player's current entry status.
 
 ### Generating
@@ -179,8 +180,9 @@ The Durable Object stores authoritative game state and metadata. It does not sto
 
 ### Start Voting
 
-1. Each entry moves through transcription and generation independently.
-2. Voting starts as soon as every player entry is ready or failed.
+1. Each entry may move through repeated transcription and generation attempts independently.
+2. The prompt history grows with each accepted twist.
+3. When the round timer expires, in-flight work is ignored and each player's latest successful image enters voting.
 
 ### Vote and Finish
 
@@ -205,9 +207,14 @@ Room
   - online
 - leaderId
 - creativeBrief
+- roundDurationMs
+- promptEndsAt
 - votingEndsAt
 - entries[playerId]
   - status: listening | transcribing | generating | ready | failed
+  - revision
+  - imageRevision
+  - promptHistory[]
   - transcript
   - finalPrompt
   - originalImageKey
@@ -226,7 +233,7 @@ One room code maps to one Durable Object. This keeps phase transitions, timers, 
 The public Worker forwards these authenticated room actions:
 
 - `start`: leader immediately starts prompting with a curated creative brief.
-- `reserve-entry`: player claims their one submission.
+- `reserve-entry`: player starts one versioned prompt attempt.
 - `entry-generating`: Worker reports a successful transcript and the final generation prompt.
 - `entry-ready`: Worker reports the R2 key and Cloudflare Images delivery URL.
 - `entry-failed`: Worker reports a safe failure message.
@@ -256,6 +263,7 @@ The browser redraws from the included room state after any event. A reconnecting
 | Timer | Duration | Owner |
 | --- | --- | --- |
 | Maximum voice clip | 10 seconds | Browser and public Worker validation |
+| Round evolution window | 30 to 300 seconds, selected by host | Durable Object alarm |
 | Voting window | 30 seconds | Durable Object alarm |
 
 ## 12. Four-Hour Build Order

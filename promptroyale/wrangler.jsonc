@@ -7,6 +7,20 @@
   "ai": {
     "binding": "AI"
   },
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "prompt-royale-images"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "GALLERY",
+      "database_name": "prompt-royale-gallery",
+      "database_id": "9c36d772-982b-4a2e-b87b-30d09cab5ea4",
+      "migrations_dir": "migrations"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
