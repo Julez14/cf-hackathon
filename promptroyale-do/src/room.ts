@@ -4,7 +4,6 @@ interface Env {}
 
 const MAX_PLAYERS = 4;
 const MIN_PLAYERS = 2;
-const COUNTDOWN_MS = 5_000;
 const PROMPT_WINDOW_MS = 20_000;
 const GENERATION_GRACE_MS = 60_000;
 const VOTING_WINDOW_MS = 30_000;
