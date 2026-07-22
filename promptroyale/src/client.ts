@@ -7,6 +7,7 @@ export const appClient = String.raw`
   const avatars = ["&#128572;", "&#128054;", "&#128056;", "&#129414;"];
   const avatarNames = ["Party Cat", "Chef Dog", "Disco Frog", "Business Duck"];
   const waitingCopy = ["Waiting for victim...", "Grab a friend!", "Your weird pal goes here", "Definitely not a trap"];
+  const finalizedRooms = new Set();
   let socket;
   let reconnectTimer;
   let phaseTimer;
@@ -15,6 +16,10 @@ export const appClient = String.raw`
   let mediaRecorder;
   let mediaStream;
   let recordingTimer;
+  let recordingInterval;
+  let recordingStartedAt;
+  let discardRecording = false;
+  let selectedRoundDuration = 90;
   let audioChunks = [];
 
   function escapeHtml(value) {
@@ -158,6 +163,9 @@ export const appClient = String.raw`
             '</div>' +
           '</section>' +
         '</div>' +
+        '<section class="player-record" id="player-record"><strong>Your record</strong><span>Loading...</span></section>' +
+        '<section class="leaderboard"><div class="gallery-head"><span class="badge purple">Leaderboard</span><h2>Royal standings</h2></div><div id="leaderboard-list"><p>Counting victories...</p></div></section>' +
+        '<section class="winner-gallery"><div class="gallery-head"><span class="badge purple">Hall of fame</span><h2>Past champions</h2></div><div class="gallery-grid" id="gallery-grid"><p>Summoning winners...</p></div></section>' +
       '</section>',
       "Party hub",
       false
@@ -245,6 +253,47 @@ export const appClient = String.raw`
       }
       window.location.assign("/room/" + code);
     });
+    loadGallery();
+    loadPlayerStats();
+    loadLeaderboard();
+  }
+
+  async function loadLeaderboard() {
+    const list = document.querySelector("#leaderboard-list");
+    if (!list) return;
+    try {
+      const response = await fetch("/api/players");
+      const payload = await response.json();
+      const players = Array.isArray(payload.players) ? payload.players : [];
+      list.innerHTML = players.length ? '<div class="leaderboard-row leaderboard-labels"><span>Player</span><span>Games</span><span>Wins</span><span>Win rate</span></div>' + players.map((player, index) => '<div class="leaderboard-row"><strong><i>#' + (index + 1) + '</i>' + escapeHtml(player.player_name) + '</strong><span>' + escapeHtml(player.games) + '</span><span>' + escapeHtml(player.wins) + '</span><span>' + escapeHtml(player.win_rate) + '%</span></div>').join('') : '<p>No players ranked yet.</p>';
+    } catch {
+      list.innerHTML = '<p>The standings are unavailable.</p>';
+    }
+  }
+
+  async function loadPlayerStats() {
+    const record = document.querySelector("#player-record");
+    if (!record) return;
+    try {
+      const response = await fetch("/api/players/" + encodeURIComponent(getPlayerId()) + "/stats");
+      const stats = await response.json();
+      record.innerHTML = '<strong>Your record</strong><span><b>' + escapeHtml(stats.wins) + '</b> wins / <b>' + escapeHtml(stats.games) + '</b> games / <b>' + escapeHtml(stats.winRate) + '%</b> win rate</span>' + (Array.isArray(stats.winningImages) && stats.winningImages.length ? '<div class="personal-wins">' + stats.winningImages.map((win) => win.image_url ? '<img src="' + escapeHtml(win.image_url) + '" alt="Your winning image">' : '').join('') + '</div>' : '');
+    } catch {
+      record.innerHTML = '<strong>Your record</strong><span>Play a game to start your stats.</span>';
+    }
+  }
+
+  async function loadGallery() {
+    const grid = document.querySelector("#gallery-grid");
+    if (!grid) return;
+    try {
+      const response = await fetch("/api/gallery");
+      const payload = await response.json();
+      const winners = Array.isArray(payload.winners) ? payload.winners : [];
+      grid.innerHTML = winners.length ? winners.map((winner) => '<article class="gallery-card"><img src="' + escapeHtml(winner.image_url) + '" alt="Winning image by ' + escapeHtml(winner.player_name) + '"><div><strong>' + escapeHtml(winner.player_name) + '</strong><span>' + escapeHtml(winner.vote_count) + ' votes / Room ' + escapeHtml(winner.room_code) + '</span></div></article>').join("") : '<p>No champions yet. Be the first.</p>';
+    } catch {
+      grid.innerHTML = '<p>The champions are hiding.</p>';
+    }
   }
 
   function renderIdentity(code) {
@@ -373,16 +422,20 @@ export const appClient = String.raw`
           '<p>' + readyMessage + '</p>' +
         '</div></div>' +
         '<div class="host-actions"><span class="host-chip">' + (isHost ? "You have the host seat" : snapshot.leader ? escapeHtml(snapshot.leader.name) + " is hosting" : "Waiting for host") + '</span>' +
-          (isHost ? '<button class="button pink small" id="start-game" type="button"' + (snapshot.players.length < 2 ? ' disabled' : '') + '>Start game</button>' : '') +
+          (isHost ? '<label class="timer-setting">Round timer<select id="round-duration"><option value="20"' + (selectedRoundDuration === 20 ? ' selected' : '') + '>20 seconds</option><option value="60"' + (selectedRoundDuration === 60 ? ' selected' : '') + '>1 minute</option><option value="90"' + (selectedRoundDuration === 90 ? ' selected' : '') + '>1:30</option><option value="120"' + (selectedRoundDuration === 120 ? ' selected' : '') + '>2 minutes</option><option value="180"' + (selectedRoundDuration === 180 ? ' selected' : '') + '>3 minutes</option><option value="300"' + (selectedRoundDuration === 300 ? ' selected' : '') + '>5 minutes</option></select></label><button class="button pink small" id="start-game" type="button"' + (snapshot.players.length < 2 ? ' disabled' : '') + '>Start game</button>' : '') +
         '</div>' +
       '</div>';
 
     const startButton = document.querySelector("#start-game");
     if (startButton) {
+      const durationSelect = document.querySelector("#round-duration");
+      durationSelect.addEventListener("change", () => {
+        selectedRoundDuration = Number(durationSelect.value);
+      });
       startButton.addEventListener("click", async () => {
         setBusy(startButton, true, "Starting...");
         try {
-          await postAction(activeRoomCode, "start", {});
+          await postAction(activeRoomCode, "start", { roundDurationSeconds: selectedRoundDuration });
         } catch (error) {
           setBusy(startButton, false, "Start game");
           window.alert(error instanceof Error ? error.message : "Could not start the game.");
@@ -416,7 +469,8 @@ export const appClient = String.raw`
     if (!deadline) return;
     const update = () => {
       const clock = document.querySelector("#game-clock");
-      if (clock) clock.textContent = Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) + "s";
+      const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (clock) clock.textContent = Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
     };
     update();
     phaseTimer = window.setInterval(update, 250);
@@ -426,10 +480,13 @@ export const appClient = String.raw`
     const entry = snapshot.entries[player.id] || { status: "listening" };
     const isSelf = player.id === getPlayerId();
     const hasVoted = snapshot.votedPlayerIds.includes(getPlayerId());
-    const image = entry.status === "ready" && entry.imageUrl
-      ? '<img class="entry-image" src="' + escapeHtml(entry.imageUrl) + '" alt="Generated entry by ' + escapeHtml(player.name) + '">'
+    const isWorking = entry.status === "transcribing" || entry.status === "generating";
+    const image = entry.imageUrl
+      ? '<div class="entry-visual"><img class="entry-image" src="' + escapeHtml(entry.imageUrl) + '" alt="Generated entry by ' + escapeHtml(player.name) + '">' + (isWorking ? '<div class="image-status"><span class="recording-dot"></span>' + (entry.status === "transcribing" ? 'Transcribing next twist' : 'Evolving image') + '</div>' : '') + '</div>'
       : '<div class="entry-placeholder"><strong>' + escapeHtml(entry.status) + '</strong><span>' + (entry.error ? escapeHtml(entry.error) : "AI is working...") + '</span></div>';
-    const transcript = entry.transcript ? '<p class="entry-prompt">&ldquo;' + escapeHtml(entry.transcript) + '&rdquo;</p>' : '';
+    const promptHistory = Array.isArray(entry.promptHistory) && entry.promptHistory.length
+      ? '<details class="prompt-stack"' + (isSelf || mode === "results" ? ' open' : '') + '><summary>Evolution stack (' + entry.promptHistory.length + ')</summary><ol><li class="base-prompt"><span>Base</span>' + escapeHtml(snapshot.creativeBrief) + '</li>' + entry.promptHistory.map((prompt, promptIndex) => '<li><span>' + (promptIndex + 1) + '</span>' + escapeHtml(prompt) + '</li>').join('') + '</ol></details>'
+      : '';
     const voteButton = mode === "voting" && entry.status === "ready" && !isSelf && !hasVoted
       ? '<button class="button small vote-button" data-candidate="' + escapeHtml(player.id) + '" type="button">Vote for this</button>'
       : '';
@@ -437,7 +494,7 @@ export const appClient = String.raw`
     const winner = snapshot.winnerPlayerId === player.id ? '<span class="winner-ribbon">Winner!</span>' : '';
 
     return '<article class="entry-card tone-' + (index % 4) + '">' + winner + image +
-      '<div class="entry-copy"><h2>' + escapeHtml(player.name) + (isSelf ? ' <small>(you)</small>' : '') + '</h2>' + transcript + votes + voteButton + '</div></article>';
+      '<div class="entry-copy"><h2>' + escapeHtml(player.name) + (isSelf ? ' <small>(you)</small>' : '') + '</h2>' + promptHistory + votes + voteButton + '</div></article>';
   }
 
   function arena(snapshot, mode) {
@@ -453,11 +510,17 @@ export const appClient = String.raw`
 
   function renderPrompting(code, snapshot) {
     const ownEntry = snapshot.entries[getPlayerId()];
-    const canSubmit = ownEntry && ownEntry.status === "listening";
+    const canSubmit = ownEntry && ownEntry.status !== "transcribing" && ownEntry.status !== "generating";
+    const hasImage = Boolean(ownEntry && ownEntry.imageUrl);
+    const workingCopy = ownEntry && ownEntry.status === "transcribing" ? "Listening back and transcribing your twist..." : "Your image is evolving. You can add another twist when it is ready.";
+    const isRecording = mediaRecorder && mediaRecorder.state === "recording";
+    const voiceControls = isRecording
+      ? '<div class="voice-row is-recording"><span><i class="recording-dot"></i> Recording <strong id="recording-elapsed">' + recordingElapsed() + '</strong> / 10.0s</span><button class="button pink" id="speech-button" type="button">Stop recording</button></div>'
+      : '<div class="voice-row"><span>or say your next twist</span><button class="button purple" id="speech-button" type="button">Record voice</button></div>';
     frame('<section class="screen game-screen"><div class="game-wrap">' +
-      phaseHeading(code, "Prompting", "Add your twist", "Voting starts after everyone finishes.", snapshot.promptEndsAt) +
+      phaseHeading(code, "Evolve", "Keep adding twists", "Regenerate your own image until the round timer ends.", snapshot.promptEndsAt) +
       '<section class="brief-card"><small>Shared brief</small><strong>' + escapeHtml(snapshot.creativeBrief) + '</strong></section>' +
-      (canSubmit ? '<form class="prompt-form" id="prompt-form"><label for="twist-input">Your visual twist</label><div class="prompt-row"><input class="text-input" id="twist-input" maxlength="500" placeholder="but it is a 1980s action movie" required><button class="button pink" type="submit">Generate text</button></div><div class="voice-row"><span>or say it out loud</span><button class="button purple" id="speech-button" type="button">Record voice</button></div><p id="prompt-feedback" class="feedback"></p></form>' : '<div class="waiting-banner">Your prompt is locked in. Watch the room cook.</div>') +
+      (canSubmit ? '<form class="prompt-form" id="prompt-form"><label for="twist-input">' + (hasImage ? 'Add another twist to your image' : 'Your first visual twist') + '</label><div class="prompt-row"><input class="text-input" id="twist-input" maxlength="500" placeholder="' + (hasImage ? 'now make it rain tiny disco balls' : 'but it is a 1980s action movie') + '" required><button class="button pink" type="submit">' + (hasImage ? 'Evolve image' : 'Create image') + '</button></div>' + voiceControls + '<p id="prompt-feedback" class="feedback"></p></form>' : '<div class="waiting-banner"><span class="recording-dot"></span>' + workingCopy + '</div>') +
       arena(snapshot, "prompting") + '</div></section>', "Prompting", true);
     startClock(snapshot.promptEndsAt);
 
@@ -474,7 +537,7 @@ export const appClient = String.raw`
           await postAction(code, "submit", { transcript });
         } catch (error) {
           setFeedback("prompt-feedback", error instanceof Error ? error.message : "Image generation failed.");
-          setBusy(button, false, "Generate");
+          setBusy(button, false, hasImage ? "Evolve image" : "Create image");
         }
       });
 
@@ -492,16 +555,28 @@ export const appClient = String.raw`
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
       mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
+      discardRecording = false;
       audioChunks = [];
       mediaRecorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) audioChunks.push(event.data);
       });
       mediaRecorder.addEventListener("stop", async () => {
         window.clearTimeout(recordingTimer);
+        window.clearInterval(recordingInterval);
         mediaStream.getTracks().forEach((track) => track.stop());
         const audio = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-        button.disabled = true;
-        button.textContent = "Transcribing...";
+        recordingStartedAt = undefined;
+        const currentButton = document.querySelector("#speech-button");
+        if (currentButton) {
+          currentButton.disabled = true;
+          currentButton.textContent = "Transcribing...";
+        }
+        if (discardRecording) {
+          mediaRecorder = undefined;
+          mediaStream = undefined;
+          audioChunks = [];
+          return;
+        }
         const body = new FormData();
         body.append("playerId", getPlayerId());
         body.append("sessionToken", getRoomToken(code));
@@ -512,8 +587,10 @@ export const appClient = String.raw`
           if (!response.ok) throw new Error(payload.error || "Speech generation failed.");
         } catch (error) {
           setFeedback("prompt-feedback", error instanceof Error ? error.message : "Speech generation failed.");
-          button.disabled = false;
-          button.textContent = "Record voice";
+          if (currentButton) {
+            currentButton.disabled = false;
+            currentButton.textContent = "Record voice";
+          }
         } finally {
           mediaRecorder = undefined;
           mediaStream = undefined;
@@ -521,13 +598,27 @@ export const appClient = String.raw`
         }
       });
       mediaRecorder.start();
-      button.textContent = "Stop & generate";
+      recordingStartedAt = Date.now();
+      button.closest(".voice-row").classList.add("is-recording");
+      button.textContent = "Stop recording";
+      const label = button.previousElementSibling;
+      label.innerHTML = '<i class="recording-dot"></i> Recording <strong id="recording-elapsed">0.0</strong> / 10.0s';
+      recordingInterval = window.setInterval(updateRecordingElapsed, 100);
       recordingTimer = window.setTimeout(() => {
         if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
       }, 10000);
     } catch {
       setFeedback("prompt-feedback", "Microphone access is required for voice prompts.");
     }
+  }
+
+  function recordingElapsed() {
+    return recordingStartedAt ? Math.min(10, (Date.now() - recordingStartedAt) / 1000).toFixed(1) : "0.0";
+  }
+
+  function updateRecordingElapsed() {
+    const elapsed = document.querySelector("#recording-elapsed");
+    if (elapsed) elapsed.textContent = recordingElapsed();
   }
 
   function renderGenerating(code, snapshot) {
@@ -562,10 +653,18 @@ export const appClient = String.raw`
     frame('<section class="screen game-screen"><div class="game-wrap">' +
       phaseHeading(code, "Results", winner ? escapeHtml(winner.name) + " wins!" : "No winner", snapshot.tieBreakApplied ? "A tie was broken by room join order." : "The room has spoken.", null) +
       arena(snapshot, "results") + '<a class="button purple play-again" href="/">Play again</a></div></section>', "Results", true);
+    if (winner && !finalizedRooms.has(code)) {
+      finalizedRooms.add(code);
+      postAction(code, "finalize", {}).catch(() => finalizedRooms.delete(code));
+    }
   }
 
   function renderRoomState(code, snapshot) {
     latestSnapshot = snapshot;
+    if (snapshot.phase !== "prompting" && mediaRecorder && mediaRecorder.state === "recording") {
+      discardRecording = true;
+      mediaRecorder.stop();
+    }
     window.clearInterval(phaseTimer);
     if (snapshot.phase === "lobby") {
       if (!document.querySelector("#lobby-content")) renderRoomShell(code);

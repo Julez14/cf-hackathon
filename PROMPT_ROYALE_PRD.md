@@ -27,9 +27,9 @@ A social, real-time experience needs a canonical room state, immediate feedback,
 
 - Let two to four players create or join a room through a short code or QR link.
 - Let a designated group leader start a timed round once enough players have joined.
-- Give every player the same creative brief and one short push-to-talk opportunity to add a twist.
+- Give every player the same creative brief and a timed window to repeatedly add twists.
 - Show each panel move through listening, transcribing, generating, and ready states in real time.
-- Generate one distinct image per player from the shared brief plus that player's voice prompt.
+- Let each player repeatedly regenerate their image from the shared brief plus their cumulative prompts.
 - Run a live vote and announce one winner.
 - Persist the completed room, entries, votes, and final images for a lightweight post-game gallery.
 
@@ -65,11 +65,11 @@ The leader starts the round and every player immediately sees the same base brie
 
 ### Step 4: Player Prompt
 
-Each player types or records a short twist, for example: "but it is a 1980s action movie." The system builds a generation prompt from the base brief plus the player's twist.
+The host chooses the round timer in the lobby. During the round, each player types or records short twists. Every new twist is added to that player's prompt history and regenerates their latest image.
 
 ### Step 5: Live Generation
 
-Each player panel broadcasts its current status to the room. Images reveal independently as they complete. Voting begins after every player entry is ready or failed.
+Each player panel broadcasts its current status and latest successful image. Players may keep evolving their own image until the timer expires, then the latest successful images enter voting.
 
 ### Step 6: Vote and Result
 
@@ -86,14 +86,15 @@ The system saves the room outcome and final images. The result screen can be sho
 - Create a unique, short room code.
 - Join an open room by code or QR-derived URL.
 - Track player presence and leader assignment in real time.
+- Let the leader choose a round duration from 30 seconds to five minutes.
 - Enforce a maximum of four players and one active round per room.
 - Enforce room phases: `lobby`, `prompting`, `generating`, `voting`, and `results`.
 
 ### Voice and Generation
 
-- Capture a short browser-recorded audio clip per player.
+- Capture repeated short browser-recorded audio clips per player during the round.
 - Transcribe the clip with Workers AI.
-- Generate one image from the shared brief plus the transcription using one Workers AI image model.
+- Regenerate each player's image from the shared brief plus all of that player's prompts in order.
 - Show transcription and generation failures without blocking the rest of the room.
 
 ### Voting
@@ -138,7 +139,7 @@ Persist only completed-game records and gallery metadata. D1 is not on the real-
 
 - Four devices can join the same room and see lobby changes without refreshing.
 - The leader can start one complete round.
-- Each player can submit a short voice prompt and receive a distinct generated image.
+- Each player can repeatedly submit typed or voice prompts and evolve their distinct generated image until time expires.
 - All devices see panel status and image completion in real time.
 - Votes are counted once per player and a winner is announced consistently on every device.
 - The winning result and image references persist after the room completes.

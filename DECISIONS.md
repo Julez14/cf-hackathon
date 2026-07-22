@@ -81,7 +81,7 @@ Record important product, architecture, implementation, and model decisions here
 
 ## 2026-07-22: Start prompting immediately and wait for every player
 
-**Status:** Accepted
+**Status:** Superseded by timed iterative image evolution
 
 **Decision:** Starting a round immediately reveals the creative brief. There is no countdown or prompt deadline. Voting opens after every player entry is ready or failed.
 
@@ -92,3 +92,17 @@ Record important product, architecture, implementation, and model decisions here
 - A room can remain in prompting if a player never submits.
 - Entry status updates show the room who is still working.
 - The voting deadline remains unchanged.
+
+## 2026-07-22: Use timed cumulative image evolution
+
+**Status:** Accepted
+
+**Decision:** The host chooses a 30-to-300-second round timer. During that window, each player may repeatedly add typed or spoken twists. Every generation uses the shared brief and all of that player's twists in order. Timer expiry locks each latest successful image for voting.
+
+**Rationale:** Iteration makes image generation the main game loop instead of a single submission step.
+
+**Consequences:**
+
+- Each generation attempt has a revision so late results cannot replace a voting image.
+- A failed regeneration preserves the player's previous successful image.
+- Only one generation may be active per player at a time.

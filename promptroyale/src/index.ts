@@ -4,6 +4,8 @@ import { toString as renderQrCode } from "qrcode";
 export interface Env {
   AI: Ai;
   ROOMS: DurableObjectNamespace;
+  IMAGES: R2Bucket;
+  GALLERY: D1Database;
 }
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -32,6 +34,29 @@ export default {
       return createQrCode(url);
     }
 
+    if (request.method === "GET" && url.pathname === "/api/gallery") {
+      const winners = await env.GALLERY.prepare("SELECT room_code, player_name, image_url, final_prompt, prompt_history, vote_count, completed_at FROM winners ORDER BY completed_at DESC LIMIT 24").all();
+      return json({ winners: winners.results });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/players") {
+      const players = await env.GALLERY.prepare("SELECT player_id, MAX(player_name) AS player_name, COUNT(*) AS games, SUM(won) AS wins, ROUND(100.0 * SUM(won) / COUNT(*)) AS win_rate, MAX(completed_at) AS last_played FROM game_players GROUP BY player_id ORDER BY wins DESC, win_rate DESC, games DESC, last_played DESC LIMIT 100").all();
+      return json({ players: players.results });
+    }
+
+    const statsMatch = /^\/api\/players\/([a-zA-Z0-9_-]{8,100})\/stats$/.exec(url.pathname);
+    if (request.method === "GET" && statsMatch) {
+      const playerId = statsMatch[1];
+      const [totals, wins] = await env.GALLERY.batch([
+        env.GALLERY.prepare("SELECT COUNT(*) AS games, COALESCE(SUM(won), 0) AS wins FROM game_players WHERE player_id = ?").bind(playerId),
+        env.GALLERY.prepare("SELECT room_code, player_name, image_url, completed_at FROM game_players WHERE player_id = ? AND won = 1 ORDER BY completed_at DESC").bind(playerId)
+      ]);
+      const summary = totals.results[0] as { games?: number; wins?: number } | undefined;
+      const games = Number(summary?.games ?? 0);
+      const winCount = Number(summary?.wins ?? 0);
+      return json({ games, wins: winCount, winRate: games ? Math.round((winCount / games) * 100) : 0, winningImages: wins.results });
+    }
+
     const roomApiMatch = /^\/api\/rooms\/([a-z0-9]{6})\/(state|live)$/i.exec(url.pathname);
     if (request.method === "GET" && roomApiMatch) {
       const code = roomApiMatch[1].toUpperCase();
@@ -52,7 +77,7 @@ export default {
       return handleSpeechEntry(request, env, env.ROOMS.getByName(code), code);
     }
 
-    const roomActionMatch = /^\/api\/rooms\/([a-z0-9]{6})\/actions\/(start|submit|mock-entry|vote)$/i.exec(url.pathname);
+    const roomActionMatch = /^\/api\/rooms\/([a-z0-9]{6})\/actions\/(start|submit|mock-entry|vote|finalize)$/i.exec(url.pathname);
     if (request.method === "POST" && roomActionMatch) {
       const code = roomActionMatch[1].toUpperCase();
       if (!isRoomCode(code)) {
@@ -143,11 +168,16 @@ async function handleRoomAction(
   }
   const payload = parsed;
 
+  if (action === "finalize") {
+    return finalizeWinner(env, room);
+  }
+
   if (action === "start") {
     return roomAction(room, "start", {
       playerId: payload.playerId,
       sessionToken: payload.sessionToken,
-      creativeBrief: mockBrief(code)
+      creativeBrief: mockBrief(code),
+      roundDurationSeconds: payload.roundDurationSeconds
     });
   }
 
@@ -174,28 +204,33 @@ async function handleRoomAction(
   if (!reserved.ok) {
     return reserved;
   }
+  const revision = await readEntryRevision(reserved, playerId);
+  if (!revision) {
+    return json({ error: "The room could not reserve this prompt." }, 502);
+  }
 
   try {
     await delay(250);
-    const generating = await roomAction(room, "entry-generating", { playerId, transcript });
+    const generating = await roomAction(room, "entry-generating", { playerId, transcript, revision });
     if (!generating.ok) {
-      await roomAction(room, "entry-failed", { playerId, error: "Mock transcription failed." });
+      await roomAction(room, "entry-failed", { playerId, revision, error: "Mock transcription failed." });
       return generating;
     }
 
     await delay(750);
-    const imageUrl = new URL(`/api/rooms/${code}/mock-images/${encodeURIComponent(playerId)}.svg`, request.url).toString();
+    const imageUrl = new URL(`/api/rooms/${code}/mock-images/${encodeURIComponent(playerId)}.svg?revision=${revision}`, request.url).toString();
     const ready = await roomAction(room, "entry-ready", {
       playerId,
-      originalImageKey: `mock/${code}/${playerId}.svg`,
+      revision,
+      originalImageKey: `mock/${code}/${playerId}/${revision}.svg`,
       imageUrl
     });
     if (!ready.ok) {
-      await roomAction(room, "entry-failed", { playerId, error: "Mock image generation failed." });
+      await roomAction(room, "entry-failed", { playerId, revision, error: "Mock image generation failed." });
     }
     return ready;
   } catch (error) {
-    await roomAction(room, "entry-failed", { playerId, error: "Mock image generation failed." }).catch(() => undefined);
+    await roomAction(room, "entry-failed", { playerId, revision, error: "Mock image generation failed." }).catch(() => undefined);
     console.error("Mock entry failed", { code, playerId, error: error instanceof Error ? error.message : String(error) });
     return json({ error: "Mock image generation failed." }, 502);
   }
@@ -214,8 +249,12 @@ async function generateEntry(
   if (!reserved.ok) {
     return reserved;
   }
+  const revision = await readEntryRevision(reserved, playerId);
+  if (!revision) {
+    return json({ error: "The room could not reserve this prompt." }, 502);
+  }
 
-  return completeEntry(request, env, room, code, playerId, transcript);
+  return completeEntry(request, env, room, code, playerId, transcript, revision);
 }
 
 async function handleSpeechEntry(request: Request, env: Env, room: DurableObjectStub, code: string): Promise<Response> {
@@ -244,6 +283,10 @@ async function handleSpeechEntry(request: Request, env: Env, room: DurableObject
   if (!reserved.ok) {
     return reserved;
   }
+  const revision = await readEntryRevision(reserved, playerId);
+  if (!revision) {
+    return json({ error: "The room could not reserve this prompt." }, 502);
+  }
 
   try {
     const transcription = await env.AI.run("@cf/openai/whisper-large-v3-turbo", {
@@ -259,9 +302,9 @@ async function handleSpeechEntry(request: Request, env: Env, room: DurableObject
     if (!transcript) {
       throw new Error("Workers AI returned no speech.");
     }
-    return completeEntry(request, env, room, code, playerId, transcript);
+    return completeEntry(request, env, room, code, playerId, transcript, revision);
   } catch (error) {
-    await roomAction(room, "entry-failed", { playerId, error: "Workers AI could not hear a prompt." }).catch(
+    await roomAction(room, "entry-failed", { playerId, revision, error: "Workers AI could not hear a prompt." }).catch(
       () => undefined
     );
     console.error("Speech transcription failed", {
@@ -279,38 +322,42 @@ async function completeEntry(
   room: DurableObjectStub,
   code: string,
   playerId: string,
-  transcript: string
+  transcript: string,
+  revision: number
 ): Promise<Response> {
 
   try {
-    const generating = await roomAction(room, "entry-generating", { playerId, transcript });
+    const generating = await roomAction(room, "entry-generating", { playerId, transcript, revision });
     if (!generating.ok) {
-      await roomAction(room, "entry-failed", { playerId, error: "Prompt preparation failed." });
+      await roomAction(room, "entry-failed", { playerId, revision, error: "Prompt preparation failed." });
       return generating;
     }
 
     const snapshot = await generating.clone().json<unknown>();
-    const finalPrompt = readFinalPrompt(snapshot, playerId);
+    const finalPrompt = readGenerationPrompt(snapshot, playerId, revision);
     if (!finalPrompt) {
       throw new Error("The room did not return a final prompt.");
     }
 
-    const imageUrl = new URL(`/api/rooms/${code}/images/${encodeURIComponent(playerId)}`, request.url).toString();
-    const imageRequest = new Request(imageUrl, { method: "GET" });
-    const imageResponse = await generateImage(env, finalPrompt, hash(`${code}:${playerId}`));
-    await (await imageCache()).put(imageRequest, imageResponse.clone());
+    const imageUrl = new URL(`/api/rooms/${code}/images/${encodeURIComponent(playerId)}?revision=${revision}`, request.url).toString();
+    const imageResponse = await generateImage(env, finalPrompt, hash(`${code}:${playerId}:${revision}`));
+    const imageKey = `rooms/${code}/${playerId}/${revision}`;
+    await env.IMAGES.put(imageKey, await imageResponse.clone().arrayBuffer(), {
+      httpMetadata: { contentType: imageResponse.headers.get("content-type") ?? "application/octet-stream" }
+    });
 
     const ready = await roomAction(room, "entry-ready", {
       playerId,
-      originalImageKey: `cache/${code}/${playerId}`,
+      revision,
+      originalImageKey: imageKey,
       imageUrl
     });
     if (!ready.ok) {
-      await roomAction(room, "entry-failed", { playerId, error: "Image generation finished too late." });
+      await roomAction(room, "entry-failed", { playerId, revision, error: "Image generation finished too late." });
     }
     return ready;
   } catch (error) {
-    await roomAction(room, "entry-failed", { playerId, error: "Workers AI could not generate this image." }).catch(
+    await roomAction(room, "entry-failed", { playerId, revision, error: "Workers AI could not generate this image." }).catch(
       () => undefined
     );
     console.error("Image generation failed", {
@@ -329,31 +376,20 @@ async function generatedImage(
   code: string,
   playerId: string
 ): Promise<Response> {
-  const cache = await imageCache();
-  const cached = await cache.match(request);
-  if (cached) {
-    return cached;
-  }
-
   const stateResponse = await room.fetch(new Request("https://room.internal/state"));
   const snapshot = await stateResponse.json<unknown>().catch(() => undefined);
-  const finalPrompt = readFinalPrompt(snapshot, playerId);
-  if (!stateResponse.ok || !finalPrompt) {
+  const image = readCurrentImage(snapshot, playerId);
+  const requestedRevision = Number(new URL(request.url).searchParams.get("revision"));
+  if (!stateResponse.ok || !image || requestedRevision !== image.revision) {
     return json({ error: "Image not found." }, 404);
   }
 
-  try {
-    const response = await generateImage(env, finalPrompt, hash(`${code}:${playerId}`));
-    await cache.put(request, response.clone());
-    return response;
-  } catch (error) {
-    console.error("Image regeneration failed", {
-      code,
-      playerId,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return json({ error: "Image is temporarily unavailable." }, 502);
-  }
+  const object = await env.IMAGES.get(image.key);
+  if (!object) return json({ error: "Image not found." }, 404);
+  const headers = new Headers({ "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+  object.writeHttpMetadata(headers);
+  headers.set("etag", object.httpEtag);
+  return new Response(object.body, { headers });
 }
 
 async function generateImage(env: Env, prompt: string, seed: number): Promise<Response> {
@@ -390,17 +426,63 @@ async function generateImage(env: Env, prompt: string, seed: number): Promise<Re
   });
 }
 
-function imageCache(): Promise<Cache> {
-  return caches.open("prompt-royale-images-v1");
-}
-
-function readFinalPrompt(snapshot: unknown, playerId: string): string | null {
+function readGenerationPrompt(snapshot: unknown, playerId: string, revision: number): string | null {
   if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
     return null;
   }
 
   const entry = snapshot.entries[playerId];
-  return isRecord(entry) && typeof entry.finalPrompt === "string" ? entry.finalPrompt : null;
+  return isRecord(entry) && entry.revision === revision && typeof entry.activePrompt === "string" ? entry.activePrompt : null;
+}
+
+function readCurrentImage(snapshot: unknown, playerId: string): { key: string; revision: number } | null {
+  if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
+    return null;
+  }
+
+  const entry = snapshot.entries[playerId];
+  return isRecord(entry) && typeof entry.originalImageKey === "string" && typeof entry.imageRevision === "number"
+    ? { key: entry.originalImageKey, revision: entry.imageRevision }
+    : null;
+}
+
+async function finalizeWinner(env: Env, room: DurableObjectStub): Promise<Response> {
+  const stateResponse = await room.fetch(new Request("https://room.internal/state"));
+  const snapshot = await stateResponse.json<unknown>().catch(() => undefined);
+  if (!stateResponse.ok || !isRecord(snapshot) || snapshot.phase !== "results" || typeof snapshot.code !== "string" || typeof snapshot.winnerPlayerId !== "string" || !Array.isArray(snapshot.players) || !isRecord(snapshot.entries)) {
+    return json({ error: "Winner is not ready." }, 409);
+  }
+
+  const winner = snapshot.players.find((player) => isRecord(player) && player.id === snapshot.winnerPlayerId);
+  const entry = snapshot.entries[snapshot.winnerPlayerId];
+  if (!isRecord(winner) || typeof winner.name !== "string" || !isRecord(entry) || typeof entry.originalImageKey !== "string" || typeof entry.imageUrl !== "string" || typeof entry.finalPrompt !== "string") {
+    return json({ error: "Winner image is unavailable." }, 409);
+  }
+
+  await env.GALLERY.prepare("INSERT OR IGNORE INTO winners (room_code, player_id, player_name, image_key, image_url, final_prompt, prompt_history, vote_count, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(snapshot.code, snapshot.winnerPlayerId, winner.name, entry.originalImageKey, entry.imageUrl, entry.finalPrompt, JSON.stringify(Array.isArray(entry.promptHistory) ? entry.promptHistory : []), typeof entry.voteCount === "number" ? entry.voteCount : 0, typeof snapshot.completedAt === "string" ? snapshot.completedAt : new Date().toISOString())
+    .run();
+  const completedAt = typeof snapshot.completedAt === "string" ? snapshot.completedAt : new Date().toISOString();
+  const statements = snapshot.players
+    .filter(isRecord)
+    .filter((player) => typeof player.id === "string" && typeof player.name === "string")
+    .map((player) => {
+      const playerEntry = snapshot.entries[player.id as string];
+      return env.GALLERY.prepare("INSERT OR IGNORE INTO game_players (room_code, player_id, player_name, won, image_url, completed_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(snapshot.code, player.id, player.name, player.id === snapshot.winnerPlayerId ? 1 : 0, isRecord(playerEntry) && typeof playerEntry.imageUrl === "string" ? playerEntry.imageUrl : null, completedAt);
+    });
+  if (statements.length) await env.GALLERY.batch(statements);
+  return json({ saved: true });
+}
+
+async function readEntryRevision(response: Response, playerId: string): Promise<number | null> {
+  const snapshot = await response.clone().json<unknown>().catch(() => undefined);
+  if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
+    return null;
+  }
+
+  const entry = snapshot.entries[playerId];
+  return isRecord(entry) && typeof entry.revision === "number" ? entry.revision : null;
 }
 
 function decodeBase64(value: string): Uint8Array {

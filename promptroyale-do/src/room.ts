@@ -4,6 +4,10 @@ interface Env {}
 
 const MAX_PLAYERS = 4;
 const MIN_PLAYERS = 2;
+const DEFAULT_ROUND_DURATION_MS = 90_000;
+const MIN_ROUND_DURATION_SECONDS = 20;
+const MAX_ROUND_DURATION_SECONDS = 300;
+const MAX_CUMULATIVE_PROMPT_LENGTH = 3_000;
 const PROMPT_WINDOW_MS = 20_000;
 const GENERATION_GRACE_MS = 60_000;
 const VOTING_WINDOW_MS = 30_000;
@@ -32,6 +36,10 @@ export interface Player {
 export interface Entry {
   playerId: string;
   status: EntryStatus;
+  revision: number;
+  imageRevision: number;
+  promptHistory: string[];
+  activePrompt: string | null;
   transcript: string | null;
   finalPrompt: string | null;
   originalImageKey: string | null;
@@ -40,7 +48,7 @@ export interface Entry {
 }
 
 export interface SavedRoom {
-  schemaVersion: 1;
+  schemaVersion: 2;
   code: string;
   createdAt: string;
   leaderId: string | null;
@@ -48,6 +56,7 @@ export interface SavedRoom {
   players: Record<string, Player>;
   sessionTokenHashes: Record<string, string>;
   creativeBrief: string | null;
+  roundDurationMs: number;
   countdownEndsAt: number | null;
   promptEndsAt: number | null;
   generationEndsAt: number | null;
@@ -72,6 +81,7 @@ export interface RoomSnapshot {
   leader: Pick<Player, "id" | "name"> | null;
   players: Array<Player & { isLeader: boolean; online: boolean }>;
   creativeBrief: string | null;
+  roundDurationMs: number;
   countdownEndsAt: number | null;
   promptEndsAt: number | null;
   generationEndsAt: number | null;
@@ -95,6 +105,11 @@ export class Room extends DurableObject<Env> {
       const saved = await this.ctx.storage.get<Partial<SavedRoom>>("room");
       if (saved) {
         this.room = restoreRoom(saved);
+        if (this.room.phase === "prompting" && this.room.promptEndsAt === null) {
+          this.room.promptEndsAt = Date.now() + this.room.roundDurationMs;
+          await this.ctx.storage.put("room", this.room);
+          await this.ctx.storage.setAlarm(this.room.promptEndsAt);
+        }
       }
     });
   }
@@ -167,7 +182,7 @@ export class Room extends DurableObject<Env> {
     }
 
     this.room = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       code,
       createdAt: new Date().toISOString(),
       leaderId: null,
@@ -175,6 +190,7 @@ export class Room extends DurableObject<Env> {
       players: {},
       sessionTokenHashes: {},
       creativeBrief: null,
+      roundDurationMs: DEFAULT_ROUND_DURATION_MS,
       countdownEndsAt: null,
       promptEndsAt: null,
       generationEndsAt: null,
@@ -300,9 +316,10 @@ export class Room extends DurableObject<Env> {
     const playerId = readPlayerId(payload);
     const authenticated = playerId ? await hasValidSession(room, playerId, payload.sessionToken) : false;
     const creativeBrief = normalizeText(payload.creativeBrief, 3, 240);
+    const roundDurationSeconds = readRoundDurationSeconds(payload.roundDurationSeconds);
 
-    if (!playerId || !readSessionToken(payload) || !creativeBrief) {
-      return problem("A valid player session and creative brief are required.", 400);
+    if (!playerId || !readSessionToken(payload) || !creativeBrief || roundDurationSeconds === null) {
+      return problem("A valid player session, creative brief, and round timer are required.", 400);
     }
 
     if (!authenticated) {
@@ -324,8 +341,9 @@ export class Room extends DurableObject<Env> {
 
     room.phase = "prompting";
     room.creativeBrief = creativeBrief;
+    room.roundDurationMs = roundDurationSeconds * 1_000;
     room.countdownEndsAt = null;
-    room.promptEndsAt = null;
+    room.promptEndsAt = Date.now() + room.roundDurationMs;
     room.generationEndsAt = null;
     room.votingEndsAt = null;
     room.entries = Object.fromEntries(players.map((player) => [player.id, emptyEntry(player.id)]));
@@ -358,11 +376,14 @@ export class Room extends DurableObject<Env> {
       return problem("Player not found in this game.", 404);
     }
 
-    if (entry.status !== "listening") {
-      return problem("This player has already submitted an entry.", 409);
+    if (entry.status === "transcribing" || entry.status === "generating") {
+      return problem("This player's previous prompt is still being generated.", 409);
     }
 
+    entry.revision += 1;
     entry.status = "transcribing";
+    entry.activePrompt = null;
+    entry.error = null;
     await this.persistAndBroadcast(room, "entry.updated");
     return json(this.snapshot(room, "entry.updated"));
   }
@@ -370,8 +391,9 @@ export class Room extends DurableObject<Env> {
   private async entryGenerating(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
     const transcript = normalizeText(payload.transcript, 1, 500);
-    if (!playerId || !transcript) {
-      return problem("A valid player ID and transcript are required.", 400);
+    const revision = readRevision(payload.revision);
+    if (!playerId || !transcript || revision === null) {
+      return problem("A valid player ID, revision, and transcript are required.", 400);
     }
 
     if (room.phase !== "prompting" && room.phase !== "generating") {
@@ -379,23 +401,29 @@ export class Room extends DurableObject<Env> {
     }
 
     const entry = room.entries[playerId];
-    if (!entry || entry.status !== "transcribing") {
+    if (!entry || entry.status !== "transcribing" || entry.revision !== revision) {
       return problem("This entry is not awaiting a transcript.", 409);
     }
 
+    const promptHistory = [...entry.promptHistory, transcript];
+    if (promptHistory.join(" ").length > MAX_CUMULATIVE_PROMPT_LENGTH) {
+      return problem("This player's combined prompts are too long.", 400);
+    }
+
     entry.status = "generating";
-    entry.transcript = transcript;
-    entry.finalPrompt = `${room.creativeBrief ?? ""}\n\nPlayer twist: ${transcript}`;
+    entry.promptHistory = promptHistory;
+    entry.activePrompt = cumulativePrompt(room.creativeBrief ?? "", promptHistory);
     await this.persistAndBroadcast(room, "entry.updated");
     return json(this.snapshot(room, "entry.updated"));
   }
 
   private async entryReady(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
+    const revision = readRevision(payload.revision);
     const originalImageKey = normalizeText(payload.originalImageKey, 1, 1024);
     const imageUrl = normalizeHttpUrl(payload.imageUrl);
-    if (!playerId || !originalImageKey || !imageUrl) {
-      return problem("A valid player ID, image key, and image URL are required.", 400);
+    if (!playerId || revision === null || !originalImageKey || !imageUrl) {
+      return problem("A valid player ID, revision, image key, and image URL are required.", 400);
     }
 
     if (room.phase !== "prompting" && room.phase !== "generating") {
@@ -403,23 +431,27 @@ export class Room extends DurableObject<Env> {
     }
 
     const entry = room.entries[playerId];
-    if (!entry || entry.status !== "generating") {
+    if (!entry || entry.status !== "generating" || entry.revision !== revision || !entry.activePrompt) {
       return problem("This entry is not generating.", 409);
     }
 
     entry.status = "ready";
+    entry.imageRevision = revision;
+    entry.transcript = entry.promptHistory.join(" + ");
+    entry.finalPrompt = entry.activePrompt;
+    entry.activePrompt = null;
     entry.originalImageKey = originalImageKey;
     entry.imageUrl = imageUrl;
-    const event = this.finishEntryUpdate(room, Date.now());
-    await this.persistAndBroadcast(room, event);
-    return json(this.snapshot(room, event));
+    await this.persistAndBroadcast(room, "entry.updated");
+    return json(this.snapshot(room, "entry.updated"));
   }
 
   private async entryFailed(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
+    const revision = readRevision(payload.revision);
     const error = normalizeText(payload.error, 1, 160) ?? "This entry could not be generated.";
-    if (!playerId) {
-      return problem("A valid player ID is required.", 400);
+    if (!playerId || revision === null) {
+      return problem("A valid player ID and revision are required.", 400);
     }
 
     if (room.phase !== "prompting" && room.phase !== "generating") {
@@ -427,15 +459,15 @@ export class Room extends DurableObject<Env> {
     }
 
     const entry = room.entries[playerId];
-    if (!entry || (entry.status !== "transcribing" && entry.status !== "generating")) {
+    if (!entry || entry.revision !== revision || (entry.status !== "transcribing" && entry.status !== "generating")) {
       return problem("This entry is not in progress.", 409);
     }
 
-    entry.status = "failed";
+    entry.status = entry.imageUrl ? "ready" : "failed";
+    entry.activePrompt = null;
     entry.error = error;
-    const event = this.finishEntryUpdate(room, Date.now());
-    await this.persistAndBroadcast(room, event);
-    return json(this.snapshot(room, event));
+    await this.persistAndBroadcast(room, "entry.updated");
+    return json(this.snapshot(room, "entry.updated"));
   }
 
   private async vote(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
@@ -478,14 +510,6 @@ export class Room extends DurableObject<Env> {
     const event = eligibleVoterIds(room).every((id) => room.votes[id]) ? this.finishGame(room) : "room.updated";
     await this.persistAndBroadcast(room, event);
     return json(this.snapshot(room, event));
-  }
-
-  private finishEntryUpdate(room: SavedRoom, now: number): RoomEvent {
-    if (!Object.values(room.entries).every((entry) => isTerminal(entry.status))) {
-      return "entry.updated";
-    }
-
-    return this.openVoting(room, now);
   }
 
   private openVoting(room: SavedRoom, now: number): RoomEvent {
@@ -541,19 +565,12 @@ export class Room extends DurableObject<Env> {
 
     if (room.phase === "prompting" && room.promptEndsAt !== null && now >= room.promptEndsAt) {
       for (const entry of Object.values(room.entries)) {
-        if (entry.status === "listening") {
-          entry.status = "failed";
-          entry.error = "Prompt window missed.";
-        }
+        entry.status = entry.imageUrl ? "ready" : "failed";
+        entry.activePrompt = null;
+        if (!entry.imageUrl) entry.error = "No image was ready before time expired.";
       }
 
-      room.promptEndsAt = null;
-      if (Object.values(room.entries).every((entry) => isTerminal(entry.status))) {
-        event = this.openVoting(room, now);
-      } else {
-        room.phase = "generating";
-        event = "generating.started";
-      }
+      event = this.openVoting(room, now);
     }
 
     if (room.phase === "generating" && room.generationEndsAt !== null && now >= room.generationEndsAt) {
@@ -616,6 +633,7 @@ export class Room extends DurableObject<Env> {
       leader: leader ? { id: leader.id, name: leader.name } : null,
       players,
       creativeBrief: room.phase === "lobby" || room.phase === "countdown" ? null : room.creativeBrief,
+      roundDurationMs: room.roundDurationMs,
       countdownEndsAt: room.countdownEndsAt,
       promptEndsAt: room.promptEndsAt,
       generationEndsAt: room.generationEndsAt,
@@ -675,8 +693,11 @@ export function isRoomCode(value: string): boolean {
 }
 
 function restoreRoom(saved: Partial<SavedRoom>): SavedRoom {
+  const entries = Object.fromEntries(
+    Object.entries(saved.entries ?? {}).map(([playerId, entry]) => [playerId, restoreEntry(playerId, entry)])
+  );
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     code: saved.code ?? "",
     createdAt: saved.createdAt ?? new Date().toISOString(),
     leaderId: saved.leaderId ?? null,
@@ -684,11 +705,12 @@ function restoreRoom(saved: Partial<SavedRoom>): SavedRoom {
     players: saved.players ?? {},
     sessionTokenHashes: saved.sessionTokenHashes ?? {},
     creativeBrief: saved.creativeBrief ?? null,
+    roundDurationMs: normalizeRoundDurationMs(saved.roundDurationMs),
     countdownEndsAt: saved.countdownEndsAt ?? null,
     promptEndsAt: saved.promptEndsAt ?? null,
     generationEndsAt: saved.generationEndsAt ?? null,
     votingEndsAt: saved.votingEndsAt ?? null,
-    entries: saved.entries ?? {},
+    entries,
     votes: saved.votes ?? {},
     winnerPlayerId: saved.winnerPlayerId ?? null,
     tieBreakApplied: saved.tieBreakApplied ?? false,
@@ -700,6 +722,10 @@ function emptyEntry(playerId: string): Entry {
   return {
     playerId,
     status: "listening",
+    revision: 0,
+    imageRevision: 0,
+    promptHistory: [],
+    activePrompt: null,
     transcript: null,
     finalPrompt: null,
     originalImageKey: null,
@@ -711,6 +737,48 @@ function emptyEntry(playerId: string): Entry {
 function actionFromPath(pathname: string): string | null {
   const match = /\/actions\/(start|reserve-entry|entry-generating|entry-ready|entry-failed|vote)$/.exec(pathname);
   return match?.[1] ?? null;
+}
+
+function restoreEntry(playerId: string, entry: Partial<Entry>): Entry {
+  const promptHistory = Array.isArray(entry.promptHistory)
+    ? entry.promptHistory.filter((prompt): prompt is string => typeof prompt === "string").slice(0, 20)
+    : entry.transcript
+      ? [entry.transcript]
+      : [];
+  return {
+    playerId,
+    status: entry.status ?? "listening",
+    revision: Number.isInteger(entry.revision) && Number(entry.revision) >= 0 ? Number(entry.revision) : entry.imageUrl ? 1 : 0,
+    imageRevision: Number.isInteger(entry.imageRevision) && Number(entry.imageRevision) >= 0 ? Number(entry.imageRevision) : entry.imageUrl ? 1 : 0,
+    promptHistory,
+    activePrompt: entry.activePrompt ?? null,
+    transcript: entry.transcript ?? null,
+    finalPrompt: entry.finalPrompt ?? null,
+    originalImageKey: entry.originalImageKey ?? null,
+    imageUrl: entry.imageUrl ?? null,
+    error: entry.error ?? null
+  };
+}
+
+function cumulativePrompt(creativeBrief: string, promptHistory: string[]): string {
+  const twists = promptHistory.map((prompt, index) => `${index + 1}. ${prompt}`).join("\n");
+  return `${creativeBrief}\n\nApply all of these player twists in order, preserving the earlier details:\n${twists}`;
+}
+
+function normalizeRoundDurationMs(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= MIN_ROUND_DURATION_SECONDS * 1_000 && value <= MAX_ROUND_DURATION_SECONDS * 1_000
+    ? value
+    : DEFAULT_ROUND_DURATION_MS;
+}
+
+function readRoundDurationSeconds(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= MIN_ROUND_DURATION_SECONDS && value <= MAX_ROUND_DURATION_SECONDS
+    ? value
+    : null;
+}
+
+function readRevision(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function orderedPlayers(room: Pick<SavedRoom, "players">): Player[] {
@@ -739,10 +807,6 @@ function voteCounts(room: Pick<SavedRoom, "votes">): Record<string, number> {
     counts[candidatePlayerId] = (counts[candidatePlayerId] ?? 0) + 1;
   }
   return counts;
-}
-
-function isTerminal(status: EntryStatus): boolean {
-  return status === "ready" || status === "failed";
 }
 
 function readPlayerId(payload: Record<string, unknown>): string | null {
