@@ -6,295 +6,208 @@
 | --- | --- |
 | Status | Draft |
 | Owner | Julian Laxman |
-| Type | Phase 2 product requirements |
+| Type | Hackathon bonus integrations |
 | Date | 22 Jul 2026 |
-| Working title | Prompt Royale: Image Evolution |
-| One-liner | Friends evolve one image through live voice-driven rounds. |
+| Working title | Prompt Royale: Royal Recap |
+| One-liner | Create an optional share card after a completed game. |
 
 ## 1. Executive Summary
 
-Phase 1 defines a game where a group creates one shared brief, generates competing image branches with voice prompts, and votes for a winner in one live round. Phase 2 turns that moment into a replayable game: the winning branch becomes the next round's shared image, and the final result becomes a lightweight, shareable recap.
+Phase 2 is a set of isolated Cloudflare bonus integrations for the hackathon. It does not expand the core game loop. Players must still be able to create a room, join, submit one voice prompt, generate an image, vote, and view results when every Phase 2 integration is disabled or unavailable.
 
-The product goal remains a social, projector-first game for two to four people. Phase 2 adds durable background processing, safer public event modes, and operational visibility without moving live room authority out of the Durable Object. It expands the Cloudflare story with AI Gateway, Queues, Workflows, Turnstile, Cloudflare Access, Workers Analytics Engine, and Browser Run while preserving Workers, Durable Objects, Workers AI, R2, Cloudflare Images, and D1 as the core platform.
+The single optional feature is a post-game Royal Recap. After a room reaches results, an organizer may request a short recap caption and a branded share card. The request runs in a separate background pipeline and can fail without changing the completed game.
 
-## 2. Background
+This scope demonstrates AI Gateway, Cloudflare Queues, Cloudflare Workflows, Turnstile, Cloudflare Access, Workers Analytics Engine, and Browser Run. Workers, Durable Objects, Workers AI, R2, Cloudflare Images, and D1 remain the core product architecture defined by the Phase 1 PRD.
 
-The Phase 1 game ends when a room selects a winning image. That creates a satisfying reveal, but it does not fulfill the product's working promise that friends can evolve a shared image together. Players cannot build on the winning interpretation, revisit the path their ideas took, or share a final result that explains the game.
+## 2. Core Protection Contract
 
-The first implementation also runs model work directly on the request path. That is appropriate for a four-hour MVP, but it gives an organizer little visibility into model errors or cost, offers no controlled retry path for transient failures, and is not suitable for an open event where automated users can trigger expensive work.
+The Phase 1 PRD and functional specification remain the source of truth for the live game.
 
-Phase 2 addresses those limits while keeping the game fast and legible: a Durable Object still decides whose turn it is, which image won, and what every browser sees. Other Cloudflare products add resilience, access control, measurement, and shareable output around that authoritative loop.
+| Core behavior | Phase 2 rule |
+| --- | --- |
+| Room creation, joining, and WebSocket presence | Must not read a Phase 2 binding or wait for a Phase 2 request. |
+| Countdown, prompts, generation status, voting, and winner selection | Remain entirely in the Room Durable Object. No Queue, Workflow, Access policy, or analytics write may affect them. |
+| Workers AI transcription and player-image generation | Continue on the existing core path. AI Gateway is not inserted into either call for this bonus scope. |
+| Results screen | Appears as soon as the Durable Object finishes the game. It does not wait for recap generation. |
+| Core failure handling | A Phase 2 failure is logged or shown only in the optional recap surface. It never changes a core response or room state. |
 
 ## 3. Problem
 
-People playing Prompt Royale need the winning image to matter after the vote. Without a next round, a strong visual branch is discarded immediately and the game's central idea stops short of genuine collaboration.
+The core game produces a good projector moment but no compact artifact to share after the game. A simple recap card gives a hackathon demo a visible outcome without changing the room rules or asking players to create accounts.
 
-Event organizers also need a way to run the game beyond a trusted hackathon audience. A public room-creation endpoint can be abused to spend model capacity, a failed inference has no reliable retry path, and the team cannot tell whether players complete rounds, reach voting, or share the result.
+The team also wants to demonstrate more Cloudflare products. Adding those products to room creation, image generation, or voting would increase the chance that a bonus integration breaks the demo. The integrations need their own bounded feature and failure mode.
 
-The product needs controlled image evolution and a reliable event mode without turning the game into an account system, a social network, or a distributed job platform.
+## 4. Goals
 
-## 4. Phase 2 Goals
-
-- Run two rounds by default, with an organizer-selectable maximum of three rounds.
-- Promote the winning ready image from each round to the next round's immutable base image.
-- Generate one image-edit branch per player from that round's base image and the player's transcribed voice instruction.
-- Keep the live game responsive while model jobs are retried safely outside the browser request lifecycle.
-- Let organizers run an invite-only event mode and a public event mode without adding player accounts.
-- Produce a durable replay page and branded share card after a completed game.
-- Measure round completion, generation latency and failure, voting completion, and result-sharing as aggregate operational events.
-- Make AI inference cost, failure, and rate behavior visible to operators.
+- Let an organizer request a recap only after a room has reached results.
+- Generate a short, optional caption from completed game metadata.
+- Create a branded share card from the caption and winning image.
+- Keep the recap pipeline asynchronous, retryable, idempotent, and isolated from the Room Durable Object.
+- Protect the optional public recap request against automated use.
+- Give organizers a protected bonus dashboard and aggregate event measurements.
+- Leave the core game functional with every bonus binding disabled.
 
 ## 5. Non-Goals
 
-- Public matchmaking, open-ended social feeds, player profiles, or persistent leaderboards.
-- More than four active players per room.
-- Continuous audio, WebRTC, video generation, or real-time image pixel streaming.
-- Multiple competing image models, bring-your-own model keys, or user-facing model controls.
-- Automatic content review as a substitute for curated themes and event moderation.
-- Moving room phases, timers, votes, or winner selection from the Durable Object to Queues, Workflows, D1, or the browser.
-- Treating Workers Analytics Engine as the source of truth for game records.
+- Changing Phase 1 room phases, timers, player limits, entry rules, voting, or winner selection.
+- Multi-round games, image-to-image editing, persistent player accounts, or leaderboards.
+- Requiring Turnstile or Cloudflare Access to create, join, play, or vote in a core room.
+- Moving transcription or player-image generation to Cloudflare Queues, Cloudflare Workflows, or AI Gateway.
+- Making a recap card required before a result can be considered complete.
+- Using Workers Analytics Engine as a game or replay data store.
 
-## 6. Users and Roles
+## 6. Core Experience
 
-| Role | Needs | Phase 2 capabilities |
+### Step 1: Finish the Core Game
+
+The Room Durable Object announces results exactly as Phase 1 defines. The results screen is complete at this point.
+
+### Step 2: Request a Royal Recap
+
+An organizer optionally opens the bonus dashboard or selects "Create recap" from the finished results view. The separate recap request verifies that the room is complete. Public requests complete Turnstile verification before the Worker accepts the request.
+
+The recap endpoint returns an acknowledgement quickly. If the endpoint is disabled, misconfigured, or unavailable, the core result remains usable and no room state changes.
+
+### Step 3: Build the Recap Outside the Game
+
+The public Worker sends a compact, non-sensitive completed-game reference to Cloudflare Queues. A Queue consumer starts a Cloudflare Workflow for that recap identifier. The Workflow reads the completed metadata, creates an optional one-sentence caption through AI Gateway, renders a card with Browser Run, and writes the optional assets and status to R2 and D1.
+
+### Step 4: View or Share the Card
+
+The results page may poll the separate recap-status endpoint or show a link when the card is ready. A failed recap shows a retryable bonus-feature message. It does not alter the winner, images, votes, or completed room record.
+
+## 7. Additional Cloudflare Products
+
+| Product | Small bonus use | Isolation rule |
 | --- | --- | --- |
-| Group leader | Keep the game moving and make each round feel connected. | Starts a two- or three-round game, sees the current base image, and advances through results. |
-| Player | See that their spoken instruction creates a distinct, fair branch. | Submits one short voice edit per round, sees live status, votes, and follows the image evolution. |
-| Spectator | Understand the game immediately on a projector or recap link. | Watches the room, sees each branch and winner, and opens the final replay or share card. |
-| Event organizer | Run a safe, observable game without managing player accounts. | Chooses public or invite-only mode, reviews aggregate outcomes, and can share a completed-game link. |
+| AI Gateway | Runs one optional text-model call that turns the completed game metadata into a short recap caption. | Core transcription and player-image generation continue to call Workers AI directly. A caption failure produces no game failure. |
+| Cloudflare Queues | Holds `recap.requested` messages after an organizer requests a recap. | Queues do not receive player media, generation jobs, votes, or Room Durable Object actions. A Queue failure affects only the recap request. |
+| Cloudflare Workflows | Runs the ordered recap steps and retries individual steps safely. | A Workflow starts only for a completed room and never changes Room Durable Object state. Image binaries stay in R2, not Workflow state. |
+| Cloudflare Turnstile | Protects the optional public `POST /api/bonus/recaps` action before it can create AI or Browser Run work. | It does not guard room creation, joining, prompting, voting, or WebSockets. |
+| Cloudflare Access | Protects the separate organizer bonus dashboard and recap administration routes. | It does not identify players or protect public core-game routes. |
+| Workers Analytics Engine | Records best-effort aggregate bonus events such as recap requested, completed, failed, and opened. | It stores no player names, transcripts, or image data and is never used to derive game state. |
+| Browser Run | Renders one branded share card after the caption and winning image are available. | Browser Run runs in the Workflow after results. A render error is visible only as an unavailable recap. |
 
-## 7. Core Experience
-
-### Step 1: Create a Protected Room
-
-The group leader creates a room. In public event mode, the browser completes a Turnstile challenge before the public Worker accepts a room-creation or generation-submission request. The Worker validates the token server-side before performing costly work.
-
-In invite-only mode, Cloudflare Access protects the organizer and event host surface. Public player participation remains a separate mode so the product does not require player accounts.
-
-### Step 2: Start Round One
-
-The leader starts a room with a curated theme and a curated starting image stored in R2. The Room Durable Object stores the image key as the immutable base image for round one and broadcasts the countdown.
-
-### Step 3: Create Branches
-
-Each player records one short voice instruction. The public Worker verifies the player and phase with the Room Durable Object, transcribes the clip with Workers AI, and records the final prompt against that player's entry.
-
-The Worker enqueues an image-generation job containing the room code, round number, entry identifier, final prompt, and base-image key. Audio and image bytes are not placed in queue messages.
-
-### Step 4: Generate and Reveal
-
-A Queue consumer reads the job, obtains the base image from R2, calls the validated Workers AI image-editing model through AI Gateway, and stores the resulting original in R2. It creates a display-ready Cloudflare Images asset, then reports the image references back to the Room Durable Object.
-
-The Durable Object accepts a result only when it matches the active round and entry. It broadcasts `generating`, `ready`, or `failed` status to every connected browser. Queued retries never create a second branch for the same entry.
-
-### Step 5: Vote and Evolve
-
-The room votes after all entries reach a terminal state or the generation deadline expires. The Durable Object resolves the winner using the existing deterministic rule. If a ready branch wins and another round remains, its R2 key becomes the next round's base image. The next round starts from that exact image for every player.
-
-### Step 6: Publish the Recap
-
-When the final round ends, the public Worker starts one Workflow for the completed room. The Workflow persists the completed replay metadata to D1, writes a final recap manifest to R2, generates a share card with Browser Run, and records the card's delivery URL. None of these steps block the live results screen.
-
-## 8. Functional Requirements
-
-### Image Evolution
-
-- A game contains two rounds by default and may contain three when selected before the game starts.
-- Each round has exactly one immutable base image key stored by the Room Durable Object.
-- Every ready branch in a round is generated from that round's base image and that entry's final voice-derived instruction.
-- The winning ready branch becomes the next base image only after voting closes.
-- A failed branch cannot receive votes or become a future base image.
-- If every branch fails, the leader can retry eligible generation jobs with the same base image and final prompts or end the game.
-- The final replay displays each round's base image, player branches, transcripts, vote totals, and winner.
-
-### Reliable Generation
-
-- The public Worker reserves the entry with the Room Durable Object before queuing a generation job.
-- Queue messages include a stable job identifier and contain references and text only, never audio or image binaries.
-- Queue consumers are idempotent because Cloudflare Queues provides at-least-once delivery.
-- A retry may replace a failed or unfinished attempt for the same active entry, but it must not create another voteable branch.
-- The Room Durable Object remains the sole authority for whether a queued result is accepted, rejected as stale, or shown to players.
-- The generation deadline remains a Durable Object timer. A late result is retained for troubleshooting but is not inserted into a completed round.
-
-### AI Observability and Cost Controls
-
-- Workers AI transcription and image-edit calls run through AI Gateway.
-- Each inference includes non-sensitive metadata for the room, round, model, and job outcome.
-- Image-generation requests bypass AI Gateway caching so two game entries never receive a cached image unexpectedly.
-- Operators can inspect aggregate inference latency, errors, rate behavior, and spend through AI Gateway.
-- Raw player names, audio, and transcripts must not be added to AI Gateway metadata. Logging retention and access must be decided before enabling prompt or response logging.
-
-### Public and Invite-Only Modes
-
-- Public mode validates Turnstile server-side for room creation and image-generation submission.
-- Turnstile validation occurs immediately before the protected action because challenge tokens are single-use and expire.
-- Invite-only mode protects the organizer/event host surface with Cloudflare Access and an explicit allow policy.
-- Access is not used as the player-identity system for public games.
-- A failed Turnstile or Access check returns a clear, non-model error and does not reserve an entry or enqueue work.
-
-### Replay and Sharing
-
-- Every completed game has a durable replay record in D1 and a recap manifest in R2.
-- The replay uses Cloudflare Images delivery URLs for responsive arena and gallery rendering.
-- A post-game Workflow creates one branded share card from the final recap using Browser Run.
-- A Browser Run failure does not affect the completed game, results screen, or replay data. The workflow retries the card step and records a safe fallback state.
-- The final public URL exposes only the fields intended for spectators. Original audio clips are never included.
-
-### Measurement
-
-- The public Worker writes aggregate game events to Workers Analytics Engine without player names, raw transcripts, or image contents.
-- Required events include room created, round started, transcription completed or failed, generation completed or failed, voting completed or expired, game completed, replay opened, and share card opened.
-- Workers Analytics Engine is used for product and operational measurement only. D1 remains the completed-game record of truth.
-
-## 9. Cloudflare Product Architecture
-
-| Product | Phase 2 responsibility | Explicit boundary |
-| --- | --- | --- |
-| Cloudflare Workers | Serves the application, validates public actions, coordinates bindings, and starts post-game work. | Does not own game authority or store image bytes in memory longer than needed. |
-| Durable Objects and WebSockets | Own one room's phases, deadlines, entries, votes, winner, and live broadcasts. | Does not run image jobs or retain media binaries. |
-| Workers AI | Transcribes voice clips and creates image-edit branches. | Uses one validated image-editing model; no player-selectable models. |
-| AI Gateway | Provides inference observability, rate controls, and cost controls for Workers AI calls. | Does not decide room state; image requests skip cache. |
-| R2 | Stores original starting images, branch images, recap manifests, and share-card originals. | Does not determine game state or voting. |
-| Cloudflare Images | Creates and delivers display-ready image variants. | Does not replace R2 as the source original. |
-| D1 | Stores completed-game metadata and replay records. | Is never on the live timer, vote, or winner path. |
-| Cloudflare Queues | Buffers and retries independent image-generation jobs. | Does not authorize jobs or decide whether a result is current. |
-| Cloudflare Workflows | Runs ordered, durable post-game publication steps. | Does not manage the live round or carry image binaries as workflow state. |
-| Cloudflare Turnstile | Reduces automated costly actions in public mode. | Is verified server-side; it is not player identity. |
-| Cloudflare Access | Protects invite-only organizer and event-host surfaces. | Does not replace room membership or public-event controls. |
-| Workers Analytics Engine | Captures aggregate completion, latency, failure, and sharing metrics. | Is not a transactional or replay data store. |
-| Browser Run | Produces a final branded share card from the recap view. | Runs after results and never blocks a game. |
+## 8. Architecture
 
 ```text
-Browser -- Turnstile --> Public Worker --> Room Durable Object --> WebSockets
-                              |                   |
-                              |                   +--> authoritative room state
-                              |
-                              +--> Workers AI transcription via AI Gateway
-                              |
-                              +--> Cloudflare Queue --> generation consumer
-                                                        |
-                                                        +--> R2 base image
-                                                        +--> Workers AI image editing via AI Gateway
-                                                        +--> R2 originals + Cloudflare Images
-                                                        +--> Room Durable Object status update
-                              |
-                              +--> Workers Analytics Engine
-                              |
-                              +--> post-game Workflow --> D1 + R2 recap + Browser Run share card
+Core game
 
-Cloudflare Access --> organizer and invite-only event surface
+Browser <-> Public Worker <-> Room Durable Object <-> WebSockets
+                                  |
+                                  +--> core results
+
+Optional Royal Recap, after core results only
+
+Organizer --> Turnstile --> POST /api/bonus/recaps --> Cloudflare Queue
+                                                       |
+                                                       v
+                                                Queue consumer
+                                                       |
+                                                       v
+                                               Cloudflare Workflow
+                                                |       |        |
+                                                |       |        +--> Browser Run --> R2 / Cloudflare Images card
+                                                |       +--> AI Gateway caption
+                                                +--> D1 recap status
+
+Public Worker -- best effort --> Workers Analytics Engine
+Cloudflare Access --> /organizer/bonus only
 ```
 
-## 10. Core Decisions
+The optional pipeline receives only a completed room code or recap identifier, a winner reference, and safe display metadata. It never receives audio bytes, image-generation jobs, player submission commands, or votes.
 
-- Phase 2 requires a completed Phase 1 single-round game before multi-round play is enabled.
-- The Room Durable Object remains the authoritative source for all live game rules and state.
-- Phase 2 introduces image-to-image editing only to make the winning image the next round's base image. It does not introduce model comparison or user-tunable generation controls.
-- A Queue is used for independent generation jobs; a Workflow is used only for the ordered post-game publication sequence. They are complementary, not interchangeable.
-- All Queue and Workflow side effects must be idempotent because their work may retry.
-- AI Gateway is required for Phase 2 inference visibility and control, but caching is disabled for generative image calls.
-- Turnstile protects expensive public actions. Cloudflare Access protects organizer and invite-only deployment modes.
-- No new Worker workspace is required. The existing public Worker can consume generation jobs and start Workflows; the private room Worker continues to own the Durable Object.
+## 9. Functional Requirements
 
-## 11. What We Are Releasing
+### Recap Request
 
-### Player Action: Evolve an Image
+- `POST /api/bonus/recaps` accepts requests only for rooms that have reached `results`.
+- A recap request has a stable recap identifier derived from the completed room, so repeated requests do not create duplicate cards.
+- Public recap requests require server-side Turnstile Siteverify validation.
+- The endpoint returns a bonus-specific error if Turnstile, Queues, or any required recap binding is unavailable.
+- The endpoint must not call a Room Durable Object action that mutates state.
 
-| Step | Action | Outcome |
+### Queue and Workflow
+
+- The Queue message contains references and display-safe fields only. It never includes audio, raw transcripts, or image binaries.
+- Queue consumers and Workflows are idempotent because both may retry work.
+- A Workflow records recap status as `queued`, `generating`, `ready`, or `failed` outside Room Durable Object state.
+- A workflow retry must reuse the same recap identifier and R2 key prefix.
+- The Workflow cannot delay, reopen, or modify a completed room.
+
+### Caption and Share Card
+
+- The optional caption uses only the shared brief, vote outcome, and fixed recap labels. It does not use player names, transcriptions, or final prompts.
+- AI Gateway metadata contains only the recap identifier, model, and outcome. It excludes raw player names and transcripts.
+- Browser Run renders from trusted application data or static HTML. It does not browse user-supplied URLs.
+- The output card is stored under an isolated R2 `bonus-recaps/` prefix and may receive a Cloudflare Images delivery URL.
+- If caption or card generation fails, the recap record retains a safe error state and the organizer can retry it.
+
+### Organizer and Analytics Surfaces
+
+- `/organizer/bonus` is a separate Cloudflare Access application with an explicit allow policy.
+- Access configuration is optional deployment configuration and does not affect public core routes.
+- Analytics writes run through `ctx.waitUntil()` after the core or bonus response is determined.
+- Analytics events contain only event type, coarse timing, outcome, and an opaque recap identifier when needed.
+
+## 10. Implementation Boundaries
+
+- Keep bonus routing and bindings in a dedicated public-Worker module, such as `src/bonus.ts`.
+- Do not add Room Durable Object actions, fields, migrations, alarms, or WebSocket events for recap work.
+- Do not make `promptroyale-do/` aware of AI Gateway, Queues, Workflows, Turnstile, Access, Analytics Engine, or Browser Run.
+- Bindings and secrets for bonus products belong only to the public Worker.
+- Put the bonus route behind an explicit `BONUS_RECAP_ENABLED` environment flag that defaults to disabled.
+- When the flag is disabled, public bonus routes return `404` and no core route reads a bonus binding.
+- Add each product incrementally. A failed deployment or configuration for a later bonus product must not change the core Worker deployment.
+
+## 11. Acceptance Criteria
+
+- The core room lifecycle works with `BONUS_RECAP_ENABLED` unset or false.
+- The core room lifecycle works when every bonus binding is absent from the development environment.
+- A completed room can request at most one active recap for a given recap identifier.
+- A failed Queue send, Workflow run, AI Gateway call, Browser Run render, Turnstile check, Access policy, or Analytics write cannot change core room state or core HTTP responses.
+- A Queue redelivery or Workflow retry does not create duplicate recap records or cards.
+- The optional public recap request rejects an invalid Turnstile token before it queues work.
+- The organizer bonus dashboard is inaccessible without a matching Cloudflare Access allow policy.
+- Analytics contains no player names, transcripts, audio, prompt text, or image contents.
+- The share card is available only after a successful optional pipeline and is never required for the results screen.
+
+## 12. Rollout Order
+
+| Slice | Scope | Exit criteria |
 | --- | --- | --- |
-| 1 | Join a room and wait for the leader to start. | The browser receives live room state through the Durable Object WebSocket. |
-| 2 | Record one voice edit for the current round. | The Worker validates the player and records a single entry. |
-| 3 | Wait for transcription and generation. | The panel shows a live status and, when ready, a branch based on the shared base image. |
-| 4 | Vote for another ready branch. | The Durable Object records one valid vote and closes the round when eligible voting completes or times out. |
-| 5 | Continue to the next round. | The winning image becomes the shared starting point for all players. |
+| 2A: Measurement | Add best-effort Workers Analytics Engine events behind the public Worker. | Core tests still pass with Analytics Engine absent. |
+| 2B: Protected request | Add the disabled-by-default recap route, Turnstile validation, and an Access-protected organizer surface. | Core routes are unchanged when the bonus flag is off. |
+| 2C: Background recap | Add Cloudflare Queues, Cloudflare Workflows, AI Gateway captioning, and Browser Run card rendering. | A failed recap leaves a completed room and results screen unchanged. |
 
-### Organizer Action: Run an Event Mode
-
-| Step | Action | Outcome |
-| --- | --- | --- |
-| Prerequisite | Choose public or invite-only event mode. | Public mode has Turnstile protection; invite-only organizer surfaces have an Access policy. |
-| 1 | Set the round count and curated starting image/theme. | The game starts with a known, safe base image and a bounded duration. |
-| 2 | Share the room link or projector view. | Players can join without creating product accounts. |
-| 3 | Review aggregate outcomes after the event. | Analytics Engine and AI Gateway show completion, reliability, and inference behavior. |
-
-### System Action: Publish a Final Recap
-
-| Step | Action | Outcome |
-| --- | --- | --- |
-| 1 | Receive the final room state. | The Worker starts one idempotent Workflow for the completed room. |
-| 2 | Persist replay metadata and manifests. | D1 and R2 hold a durable replay without affecting the finished result. |
-| 3 | Render the share card. | Browser Run produces a branded card or the workflow records a retryable fallback. |
-| 4 | Publish delivery URLs. | The replay can use Cloudflare Images variants and a final share card. |
-
-## 12. Acceptance Criteria
-
-- A room of two to four players can complete two connected rounds without refreshing.
-- Every player sees the same base image at the start of each round.
-- The next round's base image is exactly the prior round's winning ready image.
-- A duplicate Queue delivery does not produce a duplicate branch, duplicate Room Durable Object update, or additional vote target.
-- A transient generation failure can retry without blocking other players or changing live room authority.
-- The results screen appears even if recap publication or share-card generation fails.
-- Public creation and generation submission reject invalid Turnstile validation before AI work begins.
-- Invite-only organizer routes deny users who do not match a Cloudflare Access allow policy.
-- Operators can observe aggregate game funnel and inference outcomes without querying player names, raw transcripts, or image binaries.
-- The final replay contains the full round-by-round image evolution and a share card when Browser Run succeeds.
-
-## 13. Design Considerations
-
-- The projector view should make the current shared base image visually distinct from player branches.
-- Each round needs a compact evolution trail so spectators can see why the current base image exists without losing focus on active branches.
-- The mobile player interface remains limited to joining, recording, viewing status, and voting.
-- The results view should make a failed share-card render invisible to players; it is an organizer-facing operational state, not a game failure.
-- Public-mode failures should explain the action that was blocked without exposing anti-abuse signals or model details.
-
-## 14. Risks and Mitigations
+## 13. Risks and Mitigations
 
 | Risk | Mitigation |
 | --- | --- |
-| Image edits drift too far from the shared base image. | Validate one image-editing model with a fixed starting-image set before committing to the experience. Retain a curated image library for demos. |
-| Queue retries create duplicate or stale results. | Use stable job and entry identifiers; have the Durable Object reject results for a non-active entry or round. |
-| Queue delay makes a live round feel stalled. | Keep the generation deadline in the Durable Object, show entry-level status, and use Queues for reliability rather than batching for throughput. |
-| AI Gateway logs expose player-provided text. | Use non-sensitive metadata only and set an explicit logging-retention and access policy before enabling content logs. |
-| Turnstile adds friction during a live event. | Use the managed widget only on expensive actions and validate it server-side immediately before the action. |
-| Access accidentally blocks public attendees. | Scope Access to organizer and invite-only host routes, not the public player route. |
-| Browser Run is unavailable or rate-limited. | Make card generation asynchronous and retryable; never delay the results view or replay record. |
-| Cloudflare Images is unavailable for the account. | Retain R2 originals and serve a Worker-backed fallback until Cloudflare Images delivery is available. |
-| Analytics data is mistaken for authoritative records. | Keep completed game data in D1 and document Analytics Engine as aggregate, sampled telemetry. |
+| A bonus binding breaks the core Worker deployment. | Keep bindings and routes behind the bonus flag; verify a deployment with the feature disabled before enabling each slice. |
+| A recap request is repeated or a Queue message is redelivered. | Use a deterministic recap identifier and idempotent R2 and D1 writes. |
+| Turnstile or Access adds friction to players. | Scope them only to bonus surfaces, never core participation. |
+| AI Gateway or Browser Run consumes extra time or cost. | Trigger both only after an explicit recap request and cap one active recap per completed room. |
+| Analytics captures player-generated content. | Record fixed event names and opaque identifiers only. |
+| The bonus card is unavailable during a demo. | Demonstrate the completed core game first. Treat the card as an optional follow-up reveal. |
 
-## 15. Rollout Plan
+## 14. Out of Scope
 
-| Slice | Scope | Exit Criteria |
-| --- | --- | --- |
-| 2A: Evolution | Two rounds, image editing, Queue-backed generation, AI Gateway, and durable replay metadata. | A room completes two rounds with no duplicate branch under a simulated Queue retry. |
-| 2B: Event Safety | Turnstile public mode, Access-protected organizer mode, and Analytics Engine instrumentation. | Public expensive actions validate server-side and organizers can see the game funnel. |
-| 2C: Sharing | Workflow-driven recap publication, Browser Run card generation, and spectator replay. | A completed game publishes a replay without delaying the final result. |
+- Multi-round image evolution and image-to-image editing.
+- Queue-backed player-image generation or workflow-managed game state.
+- AI Gateway in the core image or transcription path.
+- Cloudflare Access for public player enrollment.
+- Turnstile for core room creation or submission.
+- Public galleries, social posting, accounts, or leaderboards.
 
-## 16. Open Questions
-
-- Which Workers AI image-editing model best preserves a shared base image while meeting live-demo latency expectations?
-- Should the host choose between two and three rounds, or should every event default to two rounds until reliability data supports a third?
-- What gallery retention period is appropriate for public event results and R2 originals?
-- What information can safely be retained in AI Gateway logs, if any, for a game with player-generated speech?
-- Does the invite-only mode need player-level Access policies, or is organizer-only protection sufficient for the first release?
-- What retry budget and generation deadline preserve game pacing without wasting model capacity?
-
-## 17. Out of Scope
-
-- Global public discovery, matchmaking, and social follows.
-- Paid competitions, prizes, or payment flows.
-- Persistent player accounts, identity-based rankings, or cross-event leaderboards.
-- Real-time collaborative image editing, masks, inpainting controls, or user-selected model parameters.
-- Image or audio moderation guarantees beyond the curated-theme and event-control model.
-- Email notifications, mobile native applications, or external social posting.
-
-## 18. References
+## 15. References
 
 - [Phase 1 PRD](./PROMPT_ROYALE_PRD.md)
 - [Phase 1 Functional Spec](./PROMPT_ROYALE_FUNCTIONAL_SPEC.md)
 - [AI Gateway with Workers AI](https://developers.cloudflare.com/ai-gateway/usage/providers/workersai/)
 - [Cloudflare Queues](https://developers.cloudflare.com/queues/)
 - [Cloudflare Workflows](https://developers.cloudflare.com/workflows/)
-- [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)
-- [Cloudflare Access self-hosted applications](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)
+- [Cloudflare Turnstile server-side validation](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/)
+- [Cloudflare Access applications](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)
 - [Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/)
 - [Browser Run](https://developers.cloudflare.com/browser-run/)

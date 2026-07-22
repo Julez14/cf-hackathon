@@ -19,3 +19,20 @@ Record important product, architecture, implementation, and model decisions here
 **Alternatives considered:** `@cf/black-forest-labs/flux-2-klein-9b` offers enhanced quality, but its higher cost makes it less suitable as the default for this latency-sensitive MVP.
 
 **Source:** [FLUX.2 [klein] 4B on Workers AI](https://developers.cloudflare.com/changelog/post/2026-01-15-flux-2-klein-4b-workers-ai/)
+
+## 2026-07-22: Keep bonus Cloudflare integrations off the core game path
+
+**Status:** Accepted
+
+**Decision:** Implement AI Gateway, Cloudflare Queues, Cloudflare Workflows, Turnstile, Cloudflare Access, Workers Analytics Engine, and Browser Run as an optional post-game Royal Recap feature. The feature is enabled only through public-Worker bonus routes and does not modify Room Durable Object state.
+
+**Rationale:** These integrations are included for hackathon bonus points. A failure, unavailable entitlement, or configuration error must not prevent the live game from creating rooms, generating player images, voting, or showing results.
+
+**Consequences:**
+
+- The Room Durable Object does not gain bonus actions, storage fields, alarms, or WebSocket events.
+- Core transcription and image generation do not route through AI Gateway, Queues, or Workflows.
+- Turnstile and Cloudflare Access protect optional recap surfaces only.
+- Recap work uses an explicit feature flag, idempotent identifiers, and safe failure states outside the completed room.
+
+**Alternatives considered:** Put Queues and AI Gateway in the generation path, and use Turnstile on room creation. Rejected because either approach makes a bonus integration a dependency of the hackathon demo.
