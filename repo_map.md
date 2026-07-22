@@ -13,6 +13,8 @@ This map points agents to the repository's important directories and entry point
 - `promptroyale/wrangler.jsonc`: Public Worker deployment config and external `ROOMS` Durable Object binding.
 - `promptroyale/src/index.ts`: Public Worker entry point and room API routing.
 - `promptroyale/src/site.ts`: Server-rendered Prompt Royale browser application.
+- `promptroyale/src/styles.ts`: Comic party-game visual system for the browser UI.
+- `promptroyale/src/client.ts`: Browser controller for identity, room creation, and live lobby state.
 - `promptroyale-do/`: Private Cloudflare Worker project that owns live room state.
 - `promptroyale-do/package.json`: Durable Object Worker scripts and workspace identity.
 - `promptroyale-do/wrangler.jsonc`: Durable Object deployment config and storage migrations.

@@ -1,4 +1,5 @@
 import { renderApp } from "./site";
+import { toString as renderQrCode } from "qrcode";
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
@@ -14,6 +15,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/api/rooms") {
       return createRoom(env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/qr") {
+      return createQrCode(url);
     }
 
     const roomApiMatch = /^\/api\/rooms\/([a-z0-9]{6})\/(state|live)$/i.exec(url.pathname);
@@ -71,6 +76,44 @@ async function createRoom(env: Env): Promise<Response> {
   }
 
   return json({ error: "We could not open a room. Please try again." }, 503);
+}
+
+async function createQrCode(requestUrl: URL): Promise<Response> {
+  const value = requestUrl.searchParams.get("url");
+
+  try {
+    const target = value ? new URL(value) : null;
+    const roomMatch = target ? /^\/room\/([a-z0-9]{6})$/i.exec(target.pathname) : null;
+    if (
+      !target ||
+      target.origin !== requestUrl.origin ||
+      target.search ||
+      target.hash ||
+      !roomMatch ||
+      !isRoomCode(roomMatch[1].toUpperCase())
+    ) {
+      return json({ error: "Enter a valid room URL." }, 400);
+    }
+
+    const roomUrl = new URL(`/room/${roomMatch[1].toUpperCase()}`, requestUrl.origin).toString();
+
+    const svg = await renderQrCode(roomUrl, {
+      type: "svg",
+      errorCorrectionLevel: "M",
+      margin: 1,
+      color: { dark: "#171221", light: "#ffffff" }
+    });
+
+    return new Response(svg, {
+      headers: {
+        "cache-control": "public, max-age=3600",
+        "content-type": "image/svg+xml; charset=UTF-8",
+        "x-content-type-options": "nosniff"
+      }
+    });
+  } catch {
+    return json({ error: "Enter a valid room URL." }, 400);
+  }
 }
 
 function createRoomCode(): string {

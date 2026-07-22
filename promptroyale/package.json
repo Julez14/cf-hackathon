@@ -7,5 +7,11 @@
     "deploy": "wrangler deploy",
     "generate-types": "wrangler types",
     "typecheck": "npm run generate-types && tsc --noEmit"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/qrcode": "^1.5.5"
   }
 }
