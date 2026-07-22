@@ -1,0 +1,19 @@
+package-lock.json
+  s_000339923b09af::t_14fe6d1aa1267d 1-1520
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ae05cf56a2e234996cf6c7316e4eeb5aa815abb4",
+  "prompts": {},
+  "sessions": {
+    "s_000339923b09af": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_07557b2f7ffenGyKgeDkfSHbVW",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "julianlaxman <jlaxman@cloudflare.com>"
+    }
+  }
+}
