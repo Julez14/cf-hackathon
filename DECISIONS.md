@@ -36,3 +36,31 @@ Record important product, architecture, implementation, and model decisions here
 - Recap work uses an explicit feature flag, idempotent identifiers, and safe failure states outside the completed room.
 
 **Alternatives considered:** Put Queues and AI Gateway in the generation path, and use Turnstile on room creation. Rejected because either approach makes a bonus integration a dependency of the hackathon demo.
+
+## 2026-07-22: Use the real room flow with mock image generation
+
+**Status:** Accepted for the pre-AI MVP
+
+**Decision:** Drive the real Durable Object phases through public Worker actions while returning deterministic, same-origin SVG images from typed transcripts.
+
+**Rationale:** This makes room creation, countdowns, entry status, voting, and results testable end to end before audio transcription and Workers AI image generation are connected.
+
+**Consequences:**
+
+- The public Worker exposes `start`, `mock-entry`, and `vote` actions.
+- Mock entries use the same Durable Object state transitions as future AI-backed entries.
+- The mock SVG path will be replaced by Workers AI and image storage without changing authoritative game rules.
+
+## 2026-07-22: Authenticate room actions with player session tokens
+
+**Status:** Accepted
+
+**Decision:** Give each player a random per-room session token, store only its SHA-256 hash in the Durable Object, and require the token for player-owned mutations.
+
+**Rationale:** Room snapshots expose player IDs, so IDs alone cannot safely authorize leader actions, submissions, or votes.
+
+**Consequences:**
+
+- The browser keeps the token in local storage and sends it when opening the room WebSocket.
+- The Durable Object never broadcasts raw tokens or token hashes.
+- The public Worker forwards the token for `start`, `reserve-entry`, and `vote` validation.

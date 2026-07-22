@@ -240,7 +240,11 @@ The public Worker forwards these authenticated room actions:
 - `entry-failed`: Worker reports a safe failure message.
 - `vote`: player votes for another player's ready entry.
 
+Player actions include the player's ID and a per-room session token established when that player joins over WebSocket. The Durable Object stores only a hash of the token and never includes it in room snapshots.
+
 Every action returns the latest room state. Invalid actions return an HTTP `4xx` response and do not change room state.
+
+For local demos without Workers AI, the public Worker exposes a `mock-entry` action that accepts typed transcript text, drives the same Durable Object entry states, and returns a same-origin generated SVG. This mock path is replaced by transcription and image generation in the AI-backed implementation.
 
 ## 10. WebSocket Updates
 

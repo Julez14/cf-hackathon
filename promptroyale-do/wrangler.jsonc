@@ -1,6 +1,7 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "prompt-royale-do",
+  "account_id": "037fe5fbda93b86022ee8c7583d1cfb1",
   "main": "src/room.ts",
   "compatibility_date": "2026-07-22",
   "migrations": [

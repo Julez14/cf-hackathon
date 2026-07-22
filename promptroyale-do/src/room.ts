@@ -10,6 +10,7 @@ const GENERATION_GRACE_MS = 60_000;
 const VOTING_WINDOW_MS = 30_000;
 const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 const PLAYER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,100}$/;
+const SESSION_TOKEN_PATTERN = /^[a-zA-Z0-9_-]{32,200}$/;
 const OPEN = 1;
 
 export type RoomPhase = "lobby" | "countdown" | "prompting" | "generating" | "voting" | "results";
@@ -46,6 +47,7 @@ export interface SavedRoom {
   leaderId: string | null;
   phase: RoomPhase;
   players: Record<string, Player>;
+  sessionTokenHashes: Record<string, string>;
   creativeBrief: string | null;
   countdownEndsAt: number | null;
   promptEndsAt: number | null;
@@ -141,6 +143,7 @@ export class Room extends DurableObject<Env> {
 
     if (room.phase === "lobby" && !this.activePlayerIds().has(attachment.playerId)) {
       delete room.players[attachment.playerId];
+      delete room.sessionTokenHashes[attachment.playerId];
 
       if (room.leaderId === attachment.playerId) {
         room.leaderId = firstPlayerId(room);
@@ -171,6 +174,7 @@ export class Room extends DurableObject<Env> {
       leaderId: null,
       phase: "lobby",
       players: {},
+      sessionTokenHashes: {},
       creativeBrief: null,
       countdownEndsAt: null,
       promptEndsAt: null,
@@ -208,6 +212,7 @@ export class Room extends DurableObject<Env> {
 
     const isSpectator = url.searchParams.get("spectator") === "true";
     const playerId = url.searchParams.get("playerId") ?? "";
+    const sessionToken = url.searchParams.get("sessionToken") ?? "";
     const name = normalizeName(url.searchParams.get("name"));
 
     if (isSpectator) {
@@ -219,11 +224,16 @@ export class Room extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: client });
     }
 
-    if (!PLAYER_ID_PATTERN.test(playerId) || !name) {
+    if (!PLAYER_ID_PATTERN.test(playerId) || !SESSION_TOKEN_PATTERN.test(sessionToken) || !name) {
       return problem("A valid player identity is required.", 400);
     }
 
     const existingPlayer = room.players[playerId];
+    const sessionTokenHash = await hashSessionToken(sessionToken);
+    if (existingPlayer && room.sessionTokenHashes[playerId] && room.sessionTokenHashes[playerId] !== sessionTokenHash) {
+      return problem("This player identity belongs to another session.", 403);
+    }
+
     if (!existingPlayer && room.phase !== "lobby") {
       return problem("The game has already started.", 409);
     }
@@ -241,6 +251,7 @@ export class Room extends DurableObject<Env> {
         joinedAt: new Date().toISOString()
       };
     }
+    room.sessionTokenHashes[playerId] = sessionTokenHash;
 
     if (!room.leaderId) {
       room.leaderId = playerId;
@@ -288,10 +299,15 @@ export class Room extends DurableObject<Env> {
 
   private async start(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
+    const authenticated = playerId ? await hasValidSession(room, playerId, payload.sessionToken) : false;
     const creativeBrief = normalizeText(payload.creativeBrief, 3, 240);
 
-    if (!playerId || !creativeBrief) {
-      return problem("A valid player ID and creative brief are required.", 400);
+    if (!playerId || !readSessionToken(payload) || !creativeBrief) {
+      return problem("A valid player session and creative brief are required.", 400);
+    }
+
+    if (!authenticated) {
+      return problem("Player session is not authorized.", 403);
     }
 
     if (room.phase !== "lobby") {
@@ -326,8 +342,13 @@ export class Room extends DurableObject<Env> {
 
   private async reserveEntry(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
-    if (!playerId) {
-      return problem("A valid player ID is required.", 400);
+    const authenticated = playerId ? await hasValidSession(room, playerId, payload.sessionToken) : false;
+    if (!playerId || !readSessionToken(payload)) {
+      return problem("A valid player session is required.", 400);
+    }
+
+    if (!authenticated) {
+      return problem("Player session is not authorized.", 403);
     }
 
     if (room.phase !== "prompting" || (room.promptEndsAt !== null && Date.now() >= room.promptEndsAt)) {
@@ -421,9 +442,14 @@ export class Room extends DurableObject<Env> {
 
   private async vote(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
+    const authenticated = playerId ? await hasValidSession(room, playerId, payload.sessionToken) : false;
     const candidatePlayerId = typeof payload.candidatePlayerId === "string" ? payload.candidatePlayerId : "";
-    if (!playerId || !PLAYER_ID_PATTERN.test(candidatePlayerId)) {
-      return problem("A valid voter and candidate are required.", 400);
+    if (!playerId || !readSessionToken(payload) || !PLAYER_ID_PATTERN.test(candidatePlayerId)) {
+      return problem("A valid voter session and candidate are required.", 400);
+    }
+
+    if (!authenticated) {
+      return problem("Player session is not authorized.", 403);
     }
 
     if (room.phase !== "voting") {
@@ -658,6 +684,7 @@ function restoreRoom(saved: Partial<SavedRoom>): SavedRoom {
     leaderId: saved.leaderId ?? null,
     phase: saved.phase ?? "lobby",
     players: saved.players ?? {},
+    sessionTokenHashes: saved.sessionTokenHashes ?? {},
     creativeBrief: saved.creativeBrief ?? null,
     countdownEndsAt: saved.countdownEndsAt ?? null,
     promptEndsAt: saved.promptEndsAt ?? null,
@@ -722,6 +749,26 @@ function isTerminal(status: EntryStatus): boolean {
 
 function readPlayerId(payload: Record<string, unknown>): string | null {
   return typeof payload.playerId === "string" && PLAYER_ID_PATTERN.test(payload.playerId) ? payload.playerId : null;
+}
+
+function readSessionToken(payload: Record<string, unknown>): string | null {
+  return typeof payload.sessionToken === "string" && SESSION_TOKEN_PATTERN.test(payload.sessionToken)
+    ? payload.sessionToken
+    : null;
+}
+
+async function hasValidSession(room: SavedRoom, playerId: string, value: unknown): Promise<boolean> {
+  if (typeof value !== "string" || !SESSION_TOKEN_PATTERN.test(value)) {
+    return false;
+  }
+
+  const expectedHash = room.sessionTokenHashes[playerId];
+  return Boolean(expectedHash) && expectedHash === (await hashSessionToken(value));
+}
+
+async function hashSessionToken(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function normalizeName(value: string | null): string | null {
