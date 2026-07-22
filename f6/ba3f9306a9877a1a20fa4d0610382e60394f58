@@ -1,0 +1,23 @@
+promptroyale-do/src/room.ts
+  s_ae34a8e6f0d36b::t_664f1465df4579 8
+promptroyale/src/client.ts
+  s_ae34a8e6f0d36b::t_be1e950cee69cb 138,166,420,426,463,465
+promptroyale/src/styles.ts
+  s_ae34a8e6f0d36b::t_2ec638cd119514 225-230,451-452,462,478,744,752,761,907,944-946
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f6ba3f9306a9877a1a20fa4d0610382e60394f58",
+  "prompts": {},
+  "sessions": {
+    "s_ae34a8e6f0d36b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0752a84a6ffeQZzSNAt7hA589e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Bill Wang <bwang@cloudflare.com>"
+    }
+  }
+}
