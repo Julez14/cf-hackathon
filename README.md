@@ -22,14 +22,33 @@ Prompt Royale is a real-time multiplayer image-generation party game for two to 
 4. Open the room link or enter its six-character code on one to three other devices or browser sessions.
 5. Once at least two players have joined, the room leader starts the game. Each player submits a typed or voice twist, then votes for another ready image.
 
-## Cloudflare Products Used
+## Cloudflare Products Implemented
 
-- **Cloudflare Workers** serves the browser application and public API.
-- **Durable Objects** maintains the authoritative room state, game rules, and live WebSocket updates.
-- **Workers AI** transcribes voice prompts and generates images.
+The current source and Worker configurations use these Cloudflare products:
 
-## Future Changes
+- **Cloudflare Workers** serves the browser application and public API from the public Worker, and hosts the room Worker entry point.
+- **Durable Objects** maintains authoritative room state, game rules, timers, persistence, and one room instance per room code.
+- **Durable Object WebSockets** broadcasts lobby, prompt, generation, voting, and results updates to connected browsers.
+- **Workers AI** transcribes voice prompts with Whisper and generates player images with FLUX.2 [klein] 4B.
+- **Workers Cache API** temporarily caches generated images behind same-origin Worker URLs.
+- **Workers Observability** is enabled for both Worker deployments.
 
-- Persist original images in R2, display assets in Cloudflare Images, and completed games in D1.
+## Future Cloudflare Product Implementations
+
+These products are planned but are not wired into the current implementation:
+
+- **R2** will persist original generated-image binaries instead of relying on the temporary cache.
+- **Cloudflare Images** will store display-ready image assets and provide optimized delivery URLs.
+- **D1** will persist completed-game, gallery, recap, vote, and winner metadata.
+- **AI Gateway** will provide optional post-game recap captioning, observability, rate limiting, and fallback controls.
+- **Cloudflare Queues** will hold asynchronous post-game recap requests.
+- **Cloudflare Workflows** will run and retry the isolated recap pipeline.
+- **Turnstile** will protect the optional public recap request from automated abuse.
+- **Cloudflare Access** will protect the organizer recap dashboard and administration routes.
+- **Workers Analytics Engine** will record aggregate recap-request and outcome metrics.
+- **Browser Run** will render branded post-game share cards.
+
+## Future Game Features
+
 - Add a post-game gallery and shareable results.
 - Explore multi-round games and image-evolution trees.
