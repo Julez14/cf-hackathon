@@ -17,6 +17,9 @@ export const appStyles = String.raw`
 
 * { box-sizing: border-box; }
 
+.service-notice { margin: 18px 0; padding: 14px 18px; border: 2px solid var(--ink); border-radius: 14px; background: var(--lilac); font-size: 14px; line-height: 1.5; }
+.service-notice.limit-reached { background: var(--yellow); font-weight: 700; }
+
 html,
 body { min-width: 320px; min-height: 100%; }
 

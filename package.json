@@ -17,7 +17,7 @@
     "generate-types": "npm run generate-types --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "wrangler deploy --dry-run --minify --outdir dist --config promptroyale-do/wrangler.jsonc && wrangler deploy --dry-run --minify --outdir dist --config promptroyale/wrangler.jsonc",
-    "test": "npm run build && node --test tests/local.mjs",
+    "test": "npm run build && node --test tests/local.mjs tests/free-limits.mjs",
     "test:live": "playwright test tests/live.spec.mjs --workers=1"
   },
   "devDependencies": {

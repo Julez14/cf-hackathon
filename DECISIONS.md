@@ -2,9 +2,19 @@
 
 Record important product, architecture, implementation, and model decisions here. Keep entries concise and durable; do not add temporary task notes or session history.
 
+## 2026-09-11: Workers Free only, without R2
+
+**Status:** Accepted; supersedes the R2 storage requirement, its lifecycle fallback, and the earlier 500-attempt cap/zero-to-disable option.
+
+**Decision:** Store only the latest successful image per player in the Room's SQLite storage, chunked into 512 KiB rows (8 MiB maximum image). Commit bytes and room metadata atomically, replacing prior chunks. Keep the ten-minute result-viewing window and alarm cleanup. Remove both R2 bindings and the unused game bucket; do not change unrelated account resources or enable paid plans, credits, gateways, or model fallbacks. Set the shared application cap to 80 attempts per UTC day, with a positive cap required.
+
+**Rationale:** The owner wants $0 hosting, accepting interruptions at Free-plan quotas. R2's free allowance is metered, whereas Workers Free, SQLite Durable Objects, D1 and Workers AI stop operations at their limits instead of purchasing overages. Images must survive room eviction without depending on R2.
+
+**Consequences:** Images are small, bounded SQLite blobs, never WebSocket payloads. Error 3036 pauses further AI attempts across rooms until midnight UTC; 3040 remains a temporary capacity error. The UI exposes a persistent free-plan notice, daily reset time in the viewer's timezone, disabled creation/generation controls on exhaustion, and meaningful handling of non-JSON platform errors. Storage exhaustion does not promise a daily reset. A Worker-wide 1027 block can prevent the page itself from loading; application code cannot override a response generated before the Worker runs. Cleanup can be delayed by a quota outage, and platform backups may retain deleted data under Cloudflare's retention policy. Upgrading the account later changes billing behavior; this is not an account-wide billing cap.
+
 ## 2026-09-11: Temporary images with post-game deletion
 
-**Status:** Accepted; supersedes indefinite image/gallery retention in the original PRD and earlier decisions, at the owner's request.
+**Status:** Superseded in storage implementation by Workers Free only above; ten-minute image retention remains accepted.
 
 **Decision:** Keep R2 as temporary shared image storage. Ten minutes after results, a Room alarm deletes all objects under that exact room prefix, clears image references, and removes its gallery image. Scores, names, prompts, votes and participation statistics remain. Result screens explain expiration. No-store image responses replace immutable year-long caching.
 

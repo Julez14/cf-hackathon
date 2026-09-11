@@ -10,12 +10,14 @@ This map points agents to the repository's important directories and entry point
 - `package.json`: npm workspace definition and root commands for all projects.
 - `DEPLOYMENT.md`: Public URL, resource inventory, costs, usage limits, and redeployment instructions.
 - `tests/local.mjs`: Local runtime regression checks without paid services.
+- `tests/room-probe.mjs` and `tests/fake-ai.mjs`: Local-only storage-failure/eviction and AI-quota test fixtures; never deployed.
+- `tests/free-limits.mjs` and `tests/free-limits.spec.mjs`: Error classification and browser quota-message checks.
 - `tests/live.spec.mjs`: Four-browser production game verification with optional synthetic voice input.
 - `promptroyale/`: Public Cloudflare Worker project for the browser UI and API.
 - `promptroyale/package.json`: Public Worker scripts and workspace identity.
 - `promptroyale/wrangler.jsonc`: Public Worker deployment config and external `ROOMS` Durable Object binding.
-- `promptroyale/r2-lifecycle.json`: Backup expiration policy for orphaned game images; normal cleanup is performed by the Room alarm.
 - `promptroyale/src/index.ts`: Public Worker entry point and room API routing.
+- `promptroyale/src/free-limits.ts`: Cloudflare quota classification, reset timestamps, and safe API error messages.
 - `promptroyale/src/site.ts`: Server-rendered Prompt Royale browser application.
 - `promptroyale/src/styles.ts`: Comic party-game visual system for the browser UI.
 - `promptroyale/src/client.ts`: Browser controller for identity, room creation, and live lobby state.

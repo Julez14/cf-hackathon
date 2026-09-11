@@ -21,6 +21,60 @@ export const appClient = String.raw`
   let selectedRoundDuration = 90;
   let audioChunks = [];
   let promptDraft = "";
+  let serviceNotice;
+
+  function dailyReset() {
+    const date = new Date();
+    date.setUTCHours(24, 0, 0, 0);
+    return date.toISOString();
+  }
+
+  function updateServiceNotice() {
+    const notice = document.querySelector("#service-notice");
+    if (notice) {
+      const reset = serviceNotice && serviceNotice.resetAt;
+      notice.textContent = serviceNotice
+        ? serviceNotice.error + (reset ? " Resets at " + new Date(reset).toLocaleString() + " (your local time)." : "")
+        : "Free public play: everyone shares a daily image allowance. When a free-plan limit is reached, play pauses instead of enabling paid usage. Daily allowances reset at 00:00 UTC.";
+      notice.classList.toggle("limit-reached", Boolean(serviceNotice));
+    }
+    document.querySelectorAll('#create-room, #start-game, #prompt-form button, #twist-input').forEach((button) => {
+      if (button.id === "speech-button" && mediaRecorder && mediaRecorder.state === "recording") return;
+      if (serviceNotice) {
+        if (!button.hasAttribute("data-free-blocked")) button.dataset.freeBlocked = String(button.disabled);
+        button.disabled = true;
+      } else if (button.hasAttribute("data-free-blocked")) {
+        button.disabled = button.dataset.freeBlocked === "true";
+        delete button.dataset.freeBlocked;
+      }
+    });
+  }
+
+  async function readApiResponse(response, fallback) {
+    const text = await response.text();
+    let payload;
+    try { payload = JSON.parse(text); } catch { payload = {}; }
+    if (!payload || typeof payload !== "object") payload = {};
+    if (!response.ok) {
+      if (/\b1027\b/.test(text)) payload = { code: "FREE_SERVICE_LIMIT", resetAt: dailyReset(), error: "The game's Cloudflare free daily request limit has been reached. Play is paused until 00:00 UTC." };
+      const message = payload.error || (response.status === 429 ? "Too many requests right now. Please wait a minute and try again." : response.status >= 500 ? "The game service is unavailable. It may have reached a free-plan limit or be temporarily offline. Please try again later; daily limits reset at 00:00 UTC." : fallback);
+      if (typeof payload.code === "string" && payload.code.startsWith("FREE_")) {
+        serviceNotice = { ...payload, error: message };
+        updateServiceNotice();
+      }
+      throw new Error(message);
+    }
+    return payload;
+  }
+
+  async function refreshAvailability() {
+    try {
+      const payload = await readApiResponse(await fetch("/api/availability", { cache: "no-store" }), "Could not check the free allowance.");
+      if (!payload.available) serviceNotice = payload;
+      else if (serviceNotice && (serviceNotice.code === "FREE_AI_LIMIT" || (serviceNotice.resetAt && Date.parse(serviceNotice.resetAt) <= Date.now()))) serviceNotice = undefined;
+      updateServiceNotice();
+    } catch { /* readApiResponse already displays recognized free-plan errors. */ }
+  }
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>\"]/g, (character) => {
@@ -96,7 +150,8 @@ export const appClient = String.raw`
   }
 
   function frame(content, phase, withConnection) {
-    app.innerHTML = decorations() + '<div class="app-frame">' + topbar(phase, withConnection) + content + '</div>';
+    app.innerHTML = decorations() + '<div class="app-frame">' + topbar(phase, withConnection) + '<aside id="service-notice" class="service-notice" role="status" aria-live="polite"></aside>' + content + '</div>';
+    updateServiceNotice();
   }
 
   function setFeedback(id, message) {
@@ -106,7 +161,9 @@ export const appClient = String.raw`
 
   function setBusy(button, busy, label) {
     button.disabled = busy;
+    if (button.hasAttribute("data-free-blocked")) button.dataset.freeBlocked = String(busy);
     button.textContent = label;
+    updateServiceNotice();
   }
 
   function readLandingName() {
@@ -205,8 +262,7 @@ export const appClient = String.raw`
 
       try {
         const response = await fetch("/api/rooms", { method: "POST" });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Unable to create a room.");
+        const payload = await readApiResponse(response, "Unable to create a room.");
         window.location.assign("/room/" + payload.code);
       } catch (error) {
         setBusy(button, false, "Create room ->");
@@ -264,7 +320,7 @@ export const appClient = String.raw`
     if (!list) return;
     try {
       const response = await fetch("/api/players");
-      const payload = await response.json();
+      const payload = await readApiResponse(response, "The standings are unavailable.");
       const players = Array.isArray(payload.players) ? payload.players : [];
       list.innerHTML = players.length ? '<div class="leaderboard-row leaderboard-labels"><span>Player</span><span>Games</span><span>Wins</span><span>Win rate</span></div>' + players.map((player, index) => '<div class="leaderboard-row"><strong><i>#' + (index + 1) + '</i>' + escapeHtml(player.player_name) + '</strong><span>' + escapeHtml(player.games) + '</span><span>' + escapeHtml(player.wins) + '</span><span>' + escapeHtml(player.win_rate) + '%</span></div>').join('') : '<p>No players ranked yet.</p>';
     } catch {
@@ -277,7 +333,7 @@ export const appClient = String.raw`
     if (!record) return;
     try {
       const response = await fetch("/api/players/" + encodeURIComponent(getPlayerId()) + "/stats");
-      const stats = await response.json();
+      const stats = await readApiResponse(response, "Your record is unavailable.");
       record.innerHTML = '<strong>Your record</strong><span><b>' + escapeHtml(stats.wins) + '</b> wins / <b>' + escapeHtml(stats.games) + '</b> games / <b>' + escapeHtml(stats.winRate) + '%</b> win rate</span>' + (Array.isArray(stats.winningImages) && stats.winningImages.length ? '<div class="personal-wins">' + stats.winningImages.map((win) => win.image_url ? '<img src="' + escapeHtml(win.image_url) + '" alt="Your winning image">' : '').join('') + '</div>' : '');
     } catch {
       record.innerHTML = '<strong>Your record</strong><span>Play a game to start your stats.</span>';
@@ -289,7 +345,7 @@ export const appClient = String.raw`
     if (!grid) return;
     try {
       const response = await fetch("/api/gallery");
-      const payload = await response.json();
+      const payload = await readApiResponse(response, "The gallery is unavailable.");
       const winners = Array.isArray(payload.winners) ? payload.winners : [];
       grid.innerHTML = winners.length ? winners.map((winner) => '<article class="gallery-card"><img src="' + escapeHtml(winner.image_url) + '" alt="Winning image by ' + escapeHtml(winner.player_name) + '"><div><strong>' + escapeHtml(winner.player_name) + '</strong><span>' + escapeHtml(winner.vote_count) + ' votes / Room ' + escapeHtml(winner.room_code) + '</span></div></article>').join("") : '<p>No champions yet. Be the first.</p>';
     } catch {
@@ -454,8 +510,7 @@ export const appClient = String.raw`
         sessionToken: getRoomToken(code)
       }, fields))
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "That move did not work.");
+    const payload = await readApiResponse(response, "That move did not work.");
     return payload;
   }
 
@@ -530,6 +585,7 @@ export const appClient = String.raw`
       (canSubmit ? '<form class="prompt-form" id="prompt-form"><label for="twist-input">' + (hasImage ? 'Add another twist to your image' : 'Your first visual twist') + '</label><div class="prompt-row"><input class="text-input" id="twist-input" maxlength="500" placeholder="' + (hasImage ? 'now make it rain tiny disco balls' : 'but it is a 1980s action movie') + '" required><button class="button pink" type="submit">' + (hasImage ? 'Evolve image' : 'Create image') + '</button></div>' + voiceControls + '<p id="prompt-feedback" class="feedback"></p></form>' : '<div class="waiting-banner"><span class="recording-dot"></span>' + workingCopy + '</div>') +
       arena(snapshot, "prompting") + '</div></section>', "Prompting", true);
     startClock(snapshot.promptEndsAt);
+    if (ownEntry && ownEntry.error) setFeedback("prompt-feedback", ownEntry.error);
 
     const form = document.querySelector("#prompt-form");
     if (form) {
@@ -601,18 +657,17 @@ export const appClient = String.raw`
         body.append("audio", audio, "prompt.webm");
         try {
           const response = await fetch("/api/rooms/" + code + "/actions/speech", { method: "POST", body });
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error || "Speech generation failed.");
+          await readApiResponse(response, "Speech generation failed.");
         } catch (error) {
           setFeedback("prompt-feedback", error instanceof Error ? error.message : "Speech generation failed.");
           if (currentButton) {
-            currentButton.disabled = false;
-            currentButton.textContent = "Record voice";
+            setBusy(currentButton, false, "Record voice");
           }
         } finally {
           mediaRecorder = undefined;
           mediaStream = undefined;
           audioChunks = [];
+          updateServiceNotice();
         }
       });
       mediaRecorder.start();
@@ -710,11 +765,10 @@ export const appClient = String.raw`
     try {
       const response = await fetch("/api/rooms/" + code + "/state", { cache: "no-store" });
       if (response.status === 404) return { kind: "missing" };
-      if (!response.ok) return { kind: "unavailable" };
-      const snapshot = await response.json();
+      const snapshot = await readApiResponse(response, "Could not load the room.");
       return { kind: "found", snapshot };
-    } catch {
-      return { kind: "unavailable" };
+    } catch (error) {
+      return { kind: "unavailable", message: error instanceof Error ? error.message : "Connection interrupted. Please try again." };
     }
   }
 
@@ -741,8 +795,9 @@ export const appClient = String.raw`
     }
     if (result.kind === "unavailable") {
       updateConnection("Retrying", "error");
+      setFeedback("service-notice", result.message);
       window.clearTimeout(reconnectTimer);
-      reconnectTimer = window.setTimeout(() => reconnect(code), 1500);
+      reconnectTimer = window.setTimeout(() => reconnect(code), serviceNotice ? 60_000 : 5000);
       return;
     }
     const snapshot = result.snapshot;
@@ -807,8 +862,9 @@ export const appClient = String.raw`
     }
     if (result.kind === "unavailable") {
       updateConnection("Retrying", "error");
+      setFeedback("service-notice", result.message);
       window.clearTimeout(reconnectTimer);
-      reconnectTimer = window.setTimeout(() => reconnect(code), 1500);
+      reconnectTimer = window.setTimeout(() => reconnect(code), serviceNotice ? 60_000 : 5000);
       return;
     }
     const snapshot = result.snapshot;
@@ -833,5 +889,7 @@ export const appClient = String.raw`
   const roomMatch = /^\/room\/([a-z0-9]{6})\/?$/i.exec(window.location.pathname);
   if (roomMatch && validRoomCode(roomMatch[1].toUpperCase())) startRoom(roomMatch[1].toUpperCase());
   else renderLanding();
+  refreshAvailability();
+  window.setInterval(() => { if (!document.hidden) refreshAvailability(); }, 60_000);
 })();
 `;

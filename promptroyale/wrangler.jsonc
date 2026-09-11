@@ -7,7 +7,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
-  "vars": { "DAILY_AI_LIMIT": "500", "ALLOW_MOCK_ENTRIES": "false" },
+  "vars": { "DAILY_AI_LIMIT": "80", "ALLOW_MOCK_ENTRIES": "false" },
   "ratelimits": [
     { "name": "ROOM_LIMITER", "namespace_id": "2026091101", "simple": { "limit": 20, "period": 60 } },
     { "name": "API_LIMITER", "namespace_id": "2026091102", "simple": { "limit": 120, "period": 60 } }
@@ -15,12 +15,6 @@
   "ai": {
     "binding": "AI"
   },
-  "r2_buckets": [
-    {
-      "binding": "IMAGES",
-      "bucket_name": "prompt-royale-images"
-    }
-  ],
   "d1_databases": [
     {
       "binding": "GALLERY",

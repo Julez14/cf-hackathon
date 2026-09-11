@@ -7,8 +7,7 @@ Play at **https://prompt-royale.juelzlax.workers.dev**. Guests enter a stage nam
 - Account: `5123e5b48cbca84dedd3925e6085c866`.
 - Public Worker: `prompt-royale` (workers.dev enabled; preview URLs disabled).
 - Private Worker: `prompt-royale-do` (workers.dev and previews disabled).
-- SQLite Durable Object: `Room`, owned by `prompt-royale-do`, migration `v1`.
-- R2: `prompt-royale-images`, accessed only through the Worker binding.
+- SQLite Durable Object: `Room`, owned by `prompt-royale-do`, migration `v1`; stores temporary images and game state.
 - D1: `prompt-royale-gallery`, ID `61430743-2ad4-421a-8e02-f2ec09edf2b7`.
 - Workers AI: FLUX.2 klein 4B for 1024×1024 images and Whisper Turbo for voice.
 
@@ -19,23 +18,30 @@ These resources are separate from the original repository's account. No existing
 Pricing checked September 11, 2026; USD, before tax. Cloudflare confirmed this account's Workers plan is Free during deployment. No subscription upgrade was made.
 
 - **Workers / Durable Objects / D1:** Within Free quotas, there is no usage charge; exceeding quotas can interrupt play. Workers Free allows 100,000 dynamic requests/day. All HTML in this app is Worker-rendered, so visits are dynamic requests. See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/), and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
-- **AI:** The account gets 10,000 neurons/day. An image uses approximately 104.2 neurons, so roughly 95 images/day fit if no other app uses the allowance. Voice consumes additional neurons. Free-plan exhaustion stops generation until midnight UTC; it does not buy more usage. The additional application cap is 500 accepted image attempts/day (including voice and failed attempts). See [AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/).
-- **If you later upgrade:** Workers Paid starts at $5/month. Each image is approximately $0.001148 before included usage; 500 images are about $0.574. Ten seconds of Whisper Turbo is approximately $0.000085. Hosting/storage overages are separate. The 500-attempt cap is not a dollar limit or an account-wide billing limit. See [FLUX pricing](https://developers.cloudflare.com/workers-ai/models/flux-2-klein-4b/) and [Whisper pricing](https://developers.cloudflare.com/workers-ai/models/whisper-large-v3-turbo/).
-- **R2 can incur costs on this account:** Standard R2 includes 10 GB-month storage, 1 million Class A operations, and 10 million Class B operations each month. Above these, storage is $0.015/GB-month, writes/listing $4.50/million, and reads $0.36/million; deletes and internet egress are free. Allowances are shared with other buckets. Images are now temporary; see retention below. Deletion does not refund AI generation usage. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/).
+- **AI:** The account gets 10,000 neurons/day. An image uses approximately 104.2 neurons, so roughly 95 images/day fit if no other app uses the allowance. Voice consumes additional neurons. Free-plan exhaustion stops generation until midnight UTC; it does not buy more usage. The application conservatively allows **80 accepted image attempts/day** (including voice and failed attempts), shared by all players. Cloudflare may stop generation sooner if other apps or voice use the allowance. See [AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/).
+- **Keep Workers Free:** This application uses no R2, Cloudflare Images, paid model provider, AI Gateway credits, or paid fallback. With the account remaining on Workers Free, its resource limits stop operations instead of purchasing overages. Unrelated subscriptions and resources on the same account are outside this app's controls. Upgrading Workers later can enable usage charges; the image-attempt cap is not a dollar limit or a lifetime account spending cap. See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+
+## Free-limit messages
+
+The home and room screens explain that allowances are shared and daily limits reset at 00:00 UTC. `/api/availability` reports the remaining application allowance. At exhaustion, the UI shows a prominent explanation and a local-time reset timestamp, disables room creation/start and image/voice submission, and leaves viewing/voting available where the underlying services still work.
+
+Workers AI error 3036 is classified as daily exhaustion and records the pause for all rooms until reset. Temporary capacity error 3040 tells players to try again in a minute instead. Recognized D1/Durable Object daily limits show a midnight reset; storage-full errors explain that space must become available, without promising a reset. API quota responses include a stable error code and `Retry-After` where known.
+
+Browsers that already loaded the app explain non-JSON Cloudflare 1027 responses rather than displaying a JSON parsing error. **If Cloudflare blocks the public Worker before it runs, a fresh visitor can see Cloudflare's own error page instead of our custom message.** The app cannot override that platform-level block.
 
 ## Image retention
 
-R2 provides temporary shared image storage during play. A Durable Object alarm deletes **all revisions 10 minutes after results**, including the winner, without needing any browser to stay open. The results view and public gallery then lose their images; win totals and textual game records remain. Failed deletion or metadata cleanup retries after one minute. The API stops exposing expired image URLs at the deadline even during a cleanup outage.
+The Room's SQLite storage holds each player's latest image during play. Images are split into 512 KiB chunks, with an 8 MiB size limit; image bytes and metadata commit atomically. Successful evolution removes the previous image. Rejected late uploads never commit image data. Images survive room eviction and are not sent inside WebSocket snapshots.
 
-Late rejected uploads are deleted immediately. `promptroyale/r2-lifecycle.json` adds a one-day expiration rule scoped to `rooms/` as a fallback for orphan uploads, while retaining the default incomplete multipart upload rule. Lifecycle deletion is asynchronous, typically within 24 hours after expiration; this is a fallback, not the ten-minute timer. See [Cloudflare lifecycle behavior](https://developers.cloudflare.com/r2/buckets/object-lifecycles/).
+A Durable Object alarm deletes the remaining images **10 minutes after results**, including the winner, without needing any browser to stay open. The results view and public gallery then lose their images; win totals and textual game records remain. Failed cleanup retries after one minute while the platform permits alarms/writes; exhaustion can delay deletion. The image API refuses expired images even if cleanup has been delayed. Cloudflare platform backups have their own retention policy.
 
-New image responses use `Cache-Control: no-store`. Images already downloaded or cached under the previous deployment cannot be recalled. R2 is not inherently required for this game concept, but removing it entirely would require replacing shared image storage/delivery.
+Image responses use `Cache-Control: no-store`. Images already downloaded or cached under a previous deployment cannot be recalled. No R2 bucket or lifecycle configuration is required.
 
 The application limits room creation and mutations/socket connections to reduce automated abuse. They are not protection against every denial-of-service scenario. Guests can exhaust the shared daily image allowance. Prompt/image moderation is not implemented, and winning images and stage names appear in the public gallery. Session identity is saved in that browser; clearing browser storage resets personal stats access.
 
 ## Redeploy
 
-Use Node.js 22 or newer. From the repository root:
+Use Node.js 24 or newer (tests use native TypeScript stripping). From the repository root:
 
 ```sh
 npm install
@@ -43,7 +49,6 @@ npx wrangler login
 npm run typecheck
 npm test
 npx wrangler d1 migrations apply prompt-royale-gallery --remote --config promptroyale/wrangler.jsonc
-npx wrangler r2 bucket lifecycle set prompt-royale-images --file promptroyale/r2-lifecycle.json
 npm run deploy
 ```
 
@@ -62,7 +67,7 @@ Optionally supply `TEST_AUDIO_FILE=/absolute/path/to/spoken-prompt.wav` to exerc
 
 ## Controls
 
-- Change `DAILY_AI_LIMIT` in `promptroyale/wrangler.jsonc`, then redeploy. It is an integer count, reset at 00:00 UTC; `0` disables this application cap. Cloudflare account limits still apply.
+- `DAILY_AI_LIMIT` in `promptroyale/wrangler.jsonc` is 80. It must be a positive integer and resets at 00:00 UTC. Do not raise it or upgrade the account without revisiting the owner's $0 requirement. Cloudflare account limits still apply.
 - Keep `ALLOW_MOCK_ENTRIES` set to `false` in production.
 - Workers Logs capture application errors. The public room Worker URL must remain disabled because its internal actions trust binding callers.
 - Model failures or generation finishing after the timer can happen. Failed evolution keeps the previous successful image; players can retry while the timer remains. Default rounds last 90 seconds; the host can choose up to five minutes.
@@ -78,9 +83,23 @@ Optionally supply `TEST_AUDIO_FILE=/absolute/path/to/spoken-prompt.wav` to exerc
 
 Verification-game images now follow the same deletion policy. GitHub automatic deployment is not configured; deploy future changes with the commands above.
 
-### Temporary-image update verification
+### Earlier temporary-image update verification (R2, now superseded)
 
 - Type generation/type-checking, builds, and the expanded local runtime regression passed. A three-second test-only retention setting exercised the real alarm handler after disconnected completion: current, superseded, and orphan revision objects were deleted, another room's object was untouched, image URLs returned 404, and win statistics remained. Legacy finalize did not restore gallery images.
 - Deployed with the production retention setting of 600 seconds and verified that four pre-existing completed rooms acquired exactly that expiration interval. All 15 stored verification images were deleted. The bucket's `rooms/` listing is empty; D1 still contains all 20 participation records and four wins, with zero image references.
 - Verified the one-day fallback lifecycle rule through the Cloudflare API. No subscription or AI-usage setting changed.
 - A fresh anonymous mobile Chromium session passed the expired-results check: all four image placeholders, winner and scores, live spectator connection, old image URL returning 404, idempotent finalize, and navigation home. No JavaScript errors or horizontal overflow were detected; the screenshot was visually checked.
+
+### Free-only storage and quota-message verification
+
+- Removed both Workers' R2 bindings and deleted the empty, game-only `prompt-royale-images` bucket after checking its contents. Other buckets were untouched. Remote settings confirm the 80-attempt cap and no R2 bindings; no paid subscription or fallback was enabled.
+- Type-checking and production builds passed. All three local test suites passed, covering chunked image storage, atomic replacement and rollback on simulated storage exhaustion, persistence through actual room eviction, alarm-driven deletion, concurrent budget reservations, and typed/voice provider-quota errors.
+- A fresh live four-player game passed with R2 already deleted: five real generated images, voice transcription, image evolution, reconnect, voting, results, gallery, stats, and anonymous spectator access.
+- All five browser quota tests passed against the deployed app with simulated error responses: daily reset messaging and mobile layout, Cloudflare HTML limit errors, storage-full messaging, voting after mid-game image exhaustion, and automatic re-enabling of controls when the allowance returns. These tests did not intentionally exhaust the real account allowance.
+- Latest deployed versions: public Worker `e04e37139e624eb2a40e88757191cbe7`; room Worker `5a6ab54c01294d839983901ccdd9100b`.
+
+To rerun the quota-message browser checks without generating images:
+
+```sh
+TEST_BASE_URL=https://prompt-royale.juelzlax.workers.dev npx playwright test tests/free-limits.spec.mjs --workers=1
+```

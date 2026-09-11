@@ -8,9 +8,6 @@
   "workers_dev": false,
   "preview_urls": false,
   "vars": { "IMAGE_RETENTION_SECONDS": "600" },
-  "r2_buckets": [
-    { "binding": "IMAGES", "bucket_name": "prompt-royale-images" }
-  ],
   "d1_databases": [
     { "binding": "GALLERY", "database_name": "prompt-royale-gallery", "database_id": "61430743-2ad4-421a-8e02-f2ec09edf2b7", "migrations_dir": "../promptroyale/migrations" }
   ],

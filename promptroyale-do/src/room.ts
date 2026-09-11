@@ -14,6 +14,8 @@ const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 const PLAYER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,100}$/;
 const SESSION_TOKEN_PATTERN = /^[a-zA-Z0-9_-]{32,200}$/;
 const OPEN = 1;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const IMAGE_CHUNK_BYTES = 512 * 1024;
 
 export type RoomPhase = "lobby" | "countdown" | "prompting" | "generating" | "voting" | "results";
 export type EntryStatus = "listening" | "transcribing" | "generating" | "ready" | "failed";
@@ -107,6 +109,10 @@ export class Room extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.initialized = this.ctx.blockConcurrencyWhile(async () => {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS image_chunks (
+        player_id TEXT NOT NULL, part INTEGER NOT NULL, body BLOB NOT NULL,
+        content_type TEXT NOT NULL, PRIMARY KEY (player_id, part)
+      )`);
       const saved = await this.ctx.storage.get<Partial<SavedRoom>>("room");
       if (saved) {
         this.room = restoreRoom(saved);
@@ -136,6 +142,13 @@ export class Room extends DurableObject<Env> {
     }
 
     const url = new URL(request.url);
+    const imageMatch = /^\/images\/([a-zA-Z0-9_-]{8,100})\/([1-9][0-9]*)$/.exec(url.pathname);
+    if (imageMatch && request.method === "POST") {
+      return this.receiveImage(request, imageMatch[1], Number(imageMatch[2]));
+    }
+    if (imageMatch && request.method === "GET") {
+      return this.imageResponse(imageMatch[1], Number(imageMatch[2]));
+    }
     if (request.method === "POST" && url.pathname === "/create") {
       return this.create(request);
     }
@@ -443,7 +456,7 @@ export class Room extends DurableObject<Env> {
     return json(this.snapshot(room, "entry.updated"));
   }
 
-  private async entryReady(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
+  private async entryReady(room: SavedRoom, payload: Record<string, unknown>, image?: { bytes: Uint8Array; contentType: string }): Promise<Response> {
     const playerId = readPlayerId(payload);
     const revision = readRevision(payload.revision);
     const originalImageKey = normalizeText(payload.originalImageKey, 1, 1024);
@@ -461,21 +474,72 @@ export class Room extends DurableObject<Env> {
       return problem("This entry is not generating.", 409);
     }
 
-    entry.status = "ready";
-    entry.imageRevision = revision;
-    entry.transcript = entry.promptHistory.join(" + ");
-    entry.finalPrompt = entry.activePrompt;
-    entry.activePrompt = null;
-    entry.originalImageKey = originalImageKey;
-    entry.imageUrl = imageUrl;
-    await this.persistAndBroadcast(room, "entry.updated");
+    const nextEntry: Entry = { ...entry, status: "ready", imageRevision: revision,
+      transcript: entry.promptHistory.join(" + "), finalPrompt: entry.activePrompt,
+      activePrompt: null, originalImageKey, imageUrl, error: null };
+    const nextRoom = { ...room, entries: { ...room.entries, [playerId]: nextEntry } };
+    // Images and metadata commit together. A failed write leaves the previous image intact.
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec("DELETE FROM image_chunks WHERE player_id = ?", playerId);
+      if (image) {
+        for (let offset = 0, part = 0; offset < image.bytes.byteLength; offset += IMAGE_CHUNK_BYTES, part++) {
+          this.ctx.storage.sql.exec("INSERT INTO image_chunks (player_id, part, body, content_type) VALUES (?, ?, ?, ?)",
+            playerId, part, image.bytes.slice(offset, offset + IMAGE_CHUNK_BYTES), image.contentType);
+        }
+      }
+      this.ctx.storage.kv.put("room", nextRoom);
+    });
+    room.entries = nextRoom.entries;
+    this.broadcast(room, "entry.updated");
     return json(this.snapshot(room, "entry.updated"));
+  }
+
+  private async receiveImage(request: Request, playerId: string, revision: number): Promise<Response> {
+    const contentType = request.headers.get("content-type") ?? "";
+    if (!/^(image\/png|image\/jpeg|image\/webp)$/.test(contentType)) return problem("Unsupported image type.", 415);
+    if (Number(request.headers.get("content-length")) > MAX_IMAGE_BYTES) return problem("Image is too large.", 413);
+    const reader = request.body?.getReader();
+    if (!reader) return problem("Image is empty.", 400);
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_IMAGE_BYTES) { await reader.cancel(); return problem("Image is too large.", 413); }
+      chunks.push(value);
+    }
+    if (!size) return problem("Image is empty.", 400);
+    // Reading the stream yields: re-check the room deadline and revision before committing.
+    await this.advanceForTime(Date.now());
+    if (!this.room) return problem("Room not found.", 404);
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return this.entryReady(this.room, { playerId, revision,
+      originalImageKey: `room/${this.room.code}/${playerId}/${revision}`,
+      imageUrl: request.headers.get("x-image-url") }, { bytes, contentType });
+  }
+
+  private imageResponse(playerId: string, revision: number): Response {
+    const room = this.room;
+    if (!room || this.imagesExpired(room) || room.entries[playerId]?.imageRevision !== revision || !room.entries[playerId]?.imageUrl) {
+      return problem("Image not found or expired.", 404);
+    }
+    const chunks = this.ctx.storage.sql.exec<{ body: ArrayBuffer; content_type: string }>(
+      "SELECT body, content_type FROM image_chunks WHERE player_id = ? ORDER BY part", playerId).toArray();
+    if (!chunks.length) return problem("Image not found or expired.", 404);
+    const size = chunks.reduce((total, chunk) => total + chunk.body.byteLength, 0);
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(new Uint8Array(chunk.body), offset); offset += chunk.body.byteLength; }
+    return new Response(bytes, { headers: { "content-type": chunks[0].content_type, "cache-control": "no-store", "x-content-type-options": "nosniff" } });
   }
 
   private async entryFailed(room: SavedRoom, payload: Record<string, unknown>): Promise<Response> {
     const playerId = readPlayerId(payload);
     const revision = readRevision(payload.revision);
-    const error = normalizeText(payload.error, 1, 160) ?? "This entry could not be generated.";
+    const error = normalizeText(payload.error, 1, 500) ?? "This entry could not be generated.";
     if (!playerId || revision === null) {
       return problem("A valid player ID and revision are required.", 400);
     }
@@ -709,7 +773,7 @@ export class Room extends DurableObject<Env> {
   }
 
   private async processResults(room: SavedRoom): Promise<void> {
-    // External R2/D1 I/O yields: coalesce concurrent finalize, alarm and state requests.
+    // External D1 I/O yields: coalesce concurrent finalize, alarm and state requests.
     if (this.resultWork) return this.resultWork;
     this.resultWork = this.persistResultsAndCleanup(room);
     try { await this.resultWork; } finally { this.resultWork = undefined; }
@@ -719,12 +783,7 @@ export class Room extends DurableObject<Env> {
     if (!room.completedAt) return;
     try {
       if (this.imagesExpired(room) && !room.imagesDeletedAt) {
-        // Delete every revision, including superseded images, not just the winner.
-        while (true) {
-          const page = await this.env.IMAGES.list({ prefix: `rooms/${room.code}/`, limit: 1000 });
-          if (!page.objects.length) break;
-          await this.env.IMAGES.delete(page.objects.map((object) => object.key));
-        }
+        this.ctx.storage.sql.exec("DELETE FROM image_chunks");
         await this.env.GALLERY.batch([
           this.env.GALLERY.prepare("DELETE FROM winners WHERE room_code = ?").bind(room.code),
           this.env.GALLERY.prepare("UPDATE game_players SET image_url = NULL WHERE room_code = ?").bind(room.code)

@@ -1,5 +1,6 @@
 import { renderApp } from "./site";
 import { toString as renderQrCode } from "qrcode";
+import { dailyImageLimit, nextDailyReset, problemResponse, serviceProblem } from "./free-limits";
 
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
@@ -22,6 +23,8 @@ export default {
       return request.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
     } catch (error) {
       console.error("Request failed", { path: new URL(request.url).pathname, error: error instanceof Error ? error.message : String(error) });
+      const limit = serviceProblem(error);
+      if (limit) return problemResponse(limit);
       return json({ error: "The game service is temporarily unavailable. Please try again." }, 503);
     }
   }
@@ -45,7 +48,13 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     if (request.method === "POST" && url.pathname === "/api/rooms") {
+      const availability = await imageAvailability(env);
+      if (!availability.available) return problemResponse(dailyImageLimit());
       return createRoom(env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/availability") {
+      return json(await imageAvailability(env));
     }
 
     if (request.method === "GET" && url.pathname === "/api/qr") {
@@ -113,7 +122,9 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
         return json({ error: "Image not found." }, 404);
       }
 
-      return generatedImage(request, env, env.ROOMS.getByName(code), code, playerId);
+      const revision = Number(url.searchParams.get("revision"));
+      if (!Number.isSafeInteger(revision) || revision < 1) return json({ error: "Image not found." }, 404);
+      return env.ROOMS.getByName(code).fetch(new Request(`https://room.internal/images/${playerId}/${revision}`));
     }
 
     const mockImageMatch = /^\/api\/rooms\/([a-z0-9]{6})\/mock-images\/([a-zA-Z0-9_-]{8,100})\.svg$/i.exec(url.pathname);
@@ -164,6 +175,8 @@ async function createRoom(env: Env): Promise<Response> {
       }
     }
   } catch (error) {
+    const limit = serviceProblem(error);
+    if (limit) return problemResponse(limit);
     console.error("Unable to create room", {
       error: error instanceof Error ? error.message : String(error)
     });
@@ -190,6 +203,7 @@ async function handleRoomAction(
   }
 
   if (action === "start") {
+    if (!(await imageAvailability(env)).available) return problemResponse(dailyImageLimit());
     return roomAction(room, "start", {
       playerId: payload.playerId,
       sessionToken: payload.sessionToken,
@@ -326,15 +340,7 @@ async function handleSpeechEntry(request: Request, env: Env, room: DurableObject
     }
     return completeEntry(request, env, room, code, playerId, transcript, revision);
   } catch (error) {
-    await roomAction(room, "entry-failed", { playerId, revision, error: "Workers AI could not hear a prompt." }).catch(
-      () => undefined
-    );
-    console.error("Speech transcription failed", {
-      code,
-      playerId,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return json({ error: "Workers AI could not hear a prompt." }, 502);
+    return generationFailure(env, room, playerId, revision, error, "Workers AI could not hear a prompt.");
   }
 }
 
@@ -363,57 +369,38 @@ async function completeEntry(
 
     const imageUrl = new URL(`/api/rooms/${code}/images/${encodeURIComponent(playerId)}?revision=${revision}`, request.url).toString();
     const imageResponse = await generateImage(env, finalPrompt, hash(`${code}:${playerId}:${revision}`));
-    const imageKey = `rooms/${code}/${playerId}/${revision}`;
-    await env.IMAGES.put(imageKey, imageResponse.body, {
-      httpMetadata: { contentType: imageResponse.headers.get("content-type") ?? "application/octet-stream" }
-    });
-
-    const ready = await roomAction(room, "entry-ready", {
-      playerId,
-      revision,
-      originalImageKey: imageKey,
-      imageUrl
-    });
+    const ready = await room.fetch(new Request(`https://room.internal/images/${playerId}/${revision}`, {
+      method: "POST", body: imageResponse.body,
+      headers: { "content-type": imageResponse.headers.get("content-type") ?? "application/octet-stream", "x-image-url": imageUrl }
+    }));
     if (!ready.ok) {
-      await env.IMAGES.delete(imageKey);
-      await roomAction(room, "entry-failed", { playerId, revision, error: "Image generation finished too late." });
+      await roomAction(room, "entry-failed", { playerId, revision, error: ready.status === 409 ? "Image generation finished too late." : "This image could not be stored. Please try again." });
     }
     return ready;
   } catch (error) {
-    await roomAction(room, "entry-failed", { playerId, revision, error: "Workers AI could not generate this image." }).catch(
-      () => undefined
-    );
-    console.error("Image generation failed", {
-      code,
-      playerId,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return json({ error: "Workers AI could not generate this image." }, 502);
+    return generationFailure(env, room, playerId, revision, error, "Workers AI could not generate this image.");
   }
 }
 
-async function generatedImage(
-  request: Request,
-  env: Env,
-  room: DurableObjectStub,
-  code: string,
-  playerId: string
-): Promise<Response> {
-  const stateResponse = await room.fetch(new Request("https://room.internal/state"));
-  const snapshot = await stateResponse.json<unknown>().catch(() => undefined);
-  const image = readCurrentImage(snapshot, playerId);
-  const requestedRevision = Number(new URL(request.url).searchParams.get("revision"));
-  if (!stateResponse.ok || !image || requestedRevision !== image.revision) {
-    return json({ error: "Image not found." }, 404);
+async function generationFailure(env: Env, room: DurableObjectStub, playerId: string, revision: number, error: unknown, fallback: string): Promise<Response> {
+  const limit = serviceProblem(error);
+  if (limit?.code === "FREE_AI_LIMIT") {
+    // Remember provider exhaustion for all rooms until UTC midnight, even if another app used the allowance.
+    await env.GALLERY.prepare("INSERT INTO daily_ai_usage (day, attempts) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET attempts = MAX(attempts, excluded.attempts)")
+      .bind(new Date().toISOString().slice(0, 10), Number(env.DAILY_AI_LIMIT)).run().catch(() => undefined);
   }
+  await roomAction(room, "entry-failed", { playerId, revision, error: limit?.error ?? fallback }).catch(() => undefined);
+  console.error("Generation failed", { playerId, error: error instanceof Error ? error.message : String(error) });
+  return limit ? problemResponse(limit) : json({ error: fallback }, 502);
+}
 
-  const object = await env.IMAGES.get(image.key);
-  if (!object) return json({ error: "Image not found." }, 404);
-  const headers = new Headers({ "x-content-type-options": "nosniff" });
-  object.writeHttpMetadata(headers);
-  headers.set("cache-control", "no-store");
-  headers.set("etag", object.httpEtag);
-  return new Response(object.body, { headers });
+async function imageAvailability(env: Env) {
+  const limit = Number(env.DAILY_AI_LIMIT);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Invalid daily AI limit.");
+  const row = await env.GALLERY.prepare("SELECT attempts FROM daily_ai_usage WHERE day = ?")
+    .bind(new Date().toISOString().slice(0, 10)).first<{ attempts: number }>();
+  const remaining = Math.max(0, limit - (row?.attempts ?? 0));
+  return { available: remaining > 0, remaining, limit, resetAt: nextDailyReset(), ...(remaining ? {} : dailyImageLimit()) };
 }
 
 async function generateImage(env: Env, prompt: string, seed: number): Promise<Response> {
@@ -453,15 +440,14 @@ async function generateImage(env: Env, prompt: string, seed: number): Promise<Re
 async function reserveAiBudget(env: Env, room: DurableObjectStub, playerId: string, revision: number): Promise<Response | null> {
   try {
     const limit = Number(env.DAILY_AI_LIMIT);
-    if (limit === 0) return null;
     if (!Number.isInteger(limit) || limit < 1) throw new Error("Invalid daily AI limit.");
     // One atomic statement enforces the cap across all rooms and Cloudflare locations.
     const reserved = await env.GALLERY.prepare("INSERT INTO daily_ai_usage (day, attempts) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET attempts = attempts + 1 WHERE attempts < ? RETURNING attempts")
       .bind(new Date().toISOString().slice(0, 10), limit).first();
     if (reserved) return null;
-    const error = "Today's shared image allowance is used up. Please come back after midnight UTC.";
-    await roomAction(room, "entry-failed", { playerId, revision, error });
-    return json({ error }, 429);
+    const problem = dailyImageLimit();
+    await roomAction(room, "entry-failed", { playerId, revision, error: problem.error });
+    return problemResponse(problem);
   } catch (error) {
     await roomAction(room, "entry-failed", { playerId, revision, error: "Image generation is temporarily unavailable." });
     throw error;
@@ -496,17 +482,6 @@ function readGenerationPrompt(snapshot: unknown, playerId: string, revision: num
 
   const entry = snapshot.entries[playerId];
   return isRecord(entry) && entry.revision === revision && typeof entry.activePrompt === "string" ? entry.activePrompt : null;
-}
-
-function readCurrentImage(snapshot: unknown, playerId: string): { key: string; revision: number } | null {
-  if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
-    return null;
-  }
-
-  const entry = snapshot.entries[playerId];
-  return isRecord(entry) && typeof entry.originalImageKey === "string" && typeof entry.imageRevision === "number"
-    ? { key: entry.originalImageKey, revision: entry.imageRevision }
-    : null;
 }
 
 async function readEntryRevision(response: Response, playerId: string): Promise<number | null> {
