@@ -14,6 +14,7 @@ This map points agents to the repository's important directories and entry point
 - `promptroyale/`: Public Cloudflare Worker project for the browser UI and API.
 - `promptroyale/package.json`: Public Worker scripts and workspace identity.
 - `promptroyale/wrangler.jsonc`: Public Worker deployment config and external `ROOMS` Durable Object binding.
+- `promptroyale/r2-lifecycle.json`: Backup expiration policy for orphaned game images; normal cleanup is performed by the Room alarm.
 - `promptroyale/src/index.ts`: Public Worker entry point and room API routing.
 - `promptroyale/src/site.ts`: Server-rendered Prompt Royale browser application.
 - `promptroyale/src/styles.ts`: Comic party-game visual system for the browser UI.

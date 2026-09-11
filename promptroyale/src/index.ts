@@ -186,7 +186,7 @@ async function handleRoomAction(
   const payload = parsed;
 
   if (action === "finalize") {
-    return finalizeWinner(env, room);
+    return roomAction(room, "finalize", {});
   }
 
   if (action === "start") {
@@ -375,6 +375,7 @@ async function completeEntry(
       imageUrl
     });
     if (!ready.ok) {
+      await env.IMAGES.delete(imageKey);
       await roomAction(room, "entry-failed", { playerId, revision, error: "Image generation finished too late." });
     }
     return ready;
@@ -408,8 +409,9 @@ async function generatedImage(
 
   const object = await env.IMAGES.get(image.key);
   if (!object) return json({ error: "Image not found." }, 404);
-  const headers = new Headers({ "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+  const headers = new Headers({ "x-content-type-options": "nosniff" });
   object.writeHttpMetadata(headers);
+  headers.set("cache-control", "no-store");
   headers.set("etag", object.httpEtag);
   return new Response(object.body, { headers });
 }
@@ -507,36 +509,6 @@ function readCurrentImage(snapshot: unknown, playerId: string): { key: string; r
     : null;
 }
 
-async function finalizeWinner(env: Env, room: DurableObjectStub): Promise<Response> {
-  const stateResponse = await room.fetch(new Request("https://room.internal/state"));
-  const snapshot = await stateResponse.json<unknown>().catch(() => undefined);
-  if (!stateResponse.ok || !isRecord(snapshot) || snapshot.phase !== "results" || typeof snapshot.code !== "string" || typeof snapshot.winnerPlayerId !== "string" || !Array.isArray(snapshot.players) || !isRecord(snapshot.entries)) {
-    return json({ error: "Winner is not ready." }, 409);
-  }
-
-  const winner = snapshot.players.find((player) => isRecord(player) && player.id === snapshot.winnerPlayerId);
-  const entry = snapshot.entries[snapshot.winnerPlayerId];
-  if (!isRecord(winner) || typeof winner.name !== "string" || !isRecord(entry) || typeof entry.originalImageKey !== "string" || typeof entry.imageUrl !== "string" || typeof entry.finalPrompt !== "string") {
-    return json({ error: "Winner image is unavailable." }, 409);
-  }
-
-  await env.GALLERY.prepare("INSERT OR IGNORE INTO winners (room_code, player_id, player_name, image_key, image_url, final_prompt, prompt_history, vote_count, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(snapshot.code, snapshot.winnerPlayerId, winner.name, entry.originalImageKey, entry.imageUrl, entry.finalPrompt, JSON.stringify(Array.isArray(entry.promptHistory) ? entry.promptHistory : []), typeof entry.voteCount === "number" ? entry.voteCount : 0, typeof snapshot.completedAt === "string" ? snapshot.completedAt : new Date().toISOString())
-    .run();
-  const completedAt = typeof snapshot.completedAt === "string" ? snapshot.completedAt : new Date().toISOString();
-  const entries = snapshot.entries;
-  const statements = snapshot.players
-    .filter(isRecord)
-    .filter((player) => typeof player.id === "string" && typeof player.name === "string")
-    .map((player) => {
-      const playerEntry = entries[player.id as string];
-      return env.GALLERY.prepare("INSERT OR IGNORE INTO game_players (room_code, player_id, player_name, won, image_url, completed_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(snapshot.code, player.id, player.name, player.id === snapshot.winnerPlayerId ? 1 : 0, isRecord(playerEntry) && typeof playerEntry.imageUrl === "string" ? playerEntry.imageUrl : null, completedAt);
-    });
-  if (statements.length) await env.GALLERY.batch(statements);
-  return json({ saved: true });
-}
-
 async function readEntryRevision(response: Response, playerId: string): Promise<number | null> {
   const snapshot = await response.clone().json<unknown>().catch(() => undefined);
   if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
@@ -590,7 +562,7 @@ async function mockImage(room: DurableObjectStub, code: string, playerId: string
   const player = snapshot.players.find(
     (candidate): candidate is Record<string, unknown> => isRecord(candidate) && candidate.id === playerId
   );
-  if (!isRecord(entry) || !player || entry.status !== "ready" || typeof player.name !== "string") {
+  if (!isRecord(entry) || !player || entry.status !== "ready" || !entry.imageUrl || typeof player.name !== "string") {
     return json({ error: "Mock image not found." }, 404);
   }
 
@@ -602,7 +574,7 @@ async function mockImage(room: DurableObjectStub, code: string, playerId: string
 
   return new Response(renderMockSvg(code, player.name, transcript), {
     headers: {
-      "cache-control": "public, max-age=31536000, immutable",
+      "cache-control": "no-store",
       "content-type": "image/svg+xml; charset=UTF-8",
       "x-content-type-options": "nosniff"
     }
@@ -795,6 +767,6 @@ function isRoomCode(value: string): boolean {
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "content-type": "application/json; charset=UTF-8" }
+    headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "no-store" }
   });
 }

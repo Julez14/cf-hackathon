@@ -7,7 +7,6 @@ export const appClient = String.raw`
   const avatars = ["&#128572;", "&#128054;", "&#128056;", "&#129414;"];
   const avatarNames = ["Party Cat", "Chef Dog", "Disco Frog", "Business Duck"];
   const waitingCopy = ["Waiting for victim...", "Grab a friend!", "Your weird pal goes here", "Definitely not a trap"];
-  const finalizedRooms = new Set();
   let socket;
   let reconnectTimer;
   let phaseTimer;
@@ -167,7 +166,7 @@ export const appClient = String.raw`
         '<section class="how-to-play"><div class="gallery-head"><span class="badge purple">New here?</span><h2>How to play</h2></div><div class="how-steps"><article><b>1</b><strong>Join</strong><span>Create a room or enter your friend\'s six-letter code.</span></article><article><b>2</b><strong>Add twists</strong><span>Type or record a change you want to see in your image.</span></article><article><b>3</b><strong>Evolve</strong><span>Keep adding twists and regenerating until time runs out.</span></article><article><b>4</b><strong>Vote</strong><span>Pick another player\'s best image. Most votes wins.</span></article></div></section>' +
         '<section class="player-record" id="player-record"><strong>Your record</strong><span>Loading...</span></section>' +
         '<section class="leaderboard"><div class="gallery-head"><span class="badge purple">Leaderboard</span><h2>Royal standings</h2></div><div id="leaderboard-list"><p>Counting victories...</p></div></section>' +
-        '<section class="winner-gallery"><div class="gallery-head"><span class="badge purple">Hall of fame</span><h2>Past champions</h2></div><div class="gallery-grid" id="gallery-grid"><p>Summoning winners...</p></div></section>' +
+        '<section class="winner-gallery"><div class="gallery-head"><span class="badge purple">Recent winners</span><h2>Fresh champions</h2></div><p>Images are deleted 10 minutes after each game. Win records stay.</p><div class="gallery-grid" id="gallery-grid"><p>Summoning winners...</p></div></section>' +
       '</section>',
       "Party hub",
       false
@@ -484,7 +483,9 @@ export const appClient = String.raw`
     const isSelf = player.id === getPlayerId();
     const hasVoted = snapshot.votedPlayerIds.includes(getPlayerId());
     const isWorking = entry.status === "transcribing" || entry.status === "generating";
-    const image = entry.imageUrl
+    const image = snapshot.imagesExpired
+      ? '<div class="entry-placeholder"><strong>Image deleted</strong><span>Post-game image retention has ended. Your result is saved.</span></div>'
+      : entry.imageUrl
       ? '<div class="entry-visual"><img class="entry-image" src="' + escapeHtml(entry.imageUrl) + '" alt="Generated entry by ' + escapeHtml(player.name) + '">' + (isWorking ? '<div class="image-status"><span class="recording-dot"></span>' + (entry.status === "transcribing" ? 'Transcribing next twist' : 'Evolving image') + '</div>' : '') + '</div>'
       : '<div class="entry-placeholder"><strong>' + escapeHtml(entry.status) + '</strong><span>' + (entry.error ? escapeHtml(entry.error) : "AI is working...") + '</span></div>';
     const promptHistory = Array.isArray(entry.promptHistory) && entry.promptHistory.length
@@ -668,10 +669,15 @@ export const appClient = String.raw`
     const winner = snapshot.players.find((player) => player.id === snapshot.winnerPlayerId);
     frame('<section class="screen game-screen"><div class="game-wrap">' +
       phaseHeading(code, "Results", winner ? escapeHtml(winner.name) + " wins!" : "No winner", snapshot.tieBreakApplied ? "A tie was broken by room join order." : "The room has spoken.", null) +
+      '<p>' + (snapshot.imagesExpired ? 'Game images have been deleted. Win statistics are kept.' : 'Images are automatically deleted 10 minutes after the game ends. Win statistics are kept.') + '</p>' +
       arena(snapshot, "results") + '<a class="button purple play-again" href="/">Play again</a></div></section>', "Results", true);
-    if (winner && !finalizedRooms.has(code)) {
-      finalizedRooms.add(code);
-      postAction(code, "finalize", {}).catch(() => finalizedRooms.delete(code));
+    if (!snapshot.imagesExpired && snapshot.imagesExpireAt) {
+      phaseTimer = window.setInterval(() => {
+        if (Date.now() >= snapshot.imagesExpireAt) {
+          window.clearInterval(phaseTimer);
+          renderRoomState(code, { ...snapshot, imagesExpired: true });
+        }
+      }, 1000);
     }
   }
 

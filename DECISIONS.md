@@ -2,6 +2,16 @@
 
 Record important product, architecture, implementation, and model decisions here. Keep entries concise and durable; do not add temporary task notes or session history.
 
+## 2026-09-11: Temporary images with post-game deletion
+
+**Status:** Accepted; supersedes indefinite image/gallery retention in the original PRD and earlier decisions, at the owner's request.
+
+**Decision:** Keep R2 as temporary shared image storage. Ten minutes after results, a Room alarm deletes all objects under that exact room prefix, clears image references, and removes its gallery image. Scores, names, prompts, votes and participation statistics remain. Result screens explain expiration. No-store image responses replace immutable year-long caching.
+
+**Rationale:** All players need the same images during play and time to view the winning result, but indefinite image storage is unnecessary. Server-side alarms run without connected browsers. D1 persistence and cleanup share a serialized, idempotent completion path with retries; legacy finalize calls cannot recreate expired references.
+
+**Consequences:** Late rejected generation uploads are deleted immediately. A bucket lifecycle rule expires remaining `rooms/` objects after one day as an orphan-upload fallback (Cloudflare lifecycle deletion is asynchronous, typically within another 24 hours). Cleanup reduces stored bytes, not AI generation usage or all storage operations. Downloaded images and previously cached copies cannot be recalled. R2 remains a dependency of this implementation, not an inherent requirement for multiplayer games.
+
 ## 2026-09-11: Public guest deployment with bounded AI usage
 
 **Status:** Accepted

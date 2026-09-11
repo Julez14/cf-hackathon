@@ -65,6 +65,9 @@ export interface SavedRoom {
   winnerPlayerId: string | null;
   tieBreakApplied: boolean;
   completedAt: string | null;
+  imagesExpireAt: number | null;
+  imagesDeletedAt: string | null;
+  resultsSaved: boolean;
 }
 
 interface SocketAttachment {
@@ -92,11 +95,14 @@ export interface RoomSnapshot {
   tieBreakApplied: boolean;
   tieBreakRule: string | null;
   completedAt: string | null;
+  imagesExpireAt: number | null;
+  imagesExpired: boolean;
 }
 
 export class Room extends DurableObject<Env> {
   private room: SavedRoom | undefined;
   private readonly initialized: Promise<void>;
+  private resultWork: Promise<void> | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -104,6 +110,15 @@ export class Room extends DurableObject<Env> {
       const saved = await this.ctx.storage.get<Partial<SavedRoom>>("room");
       if (saved) {
         this.room = restoreRoom(saved);
+        if (this.room.phase === "results" && this.room.completedAt) {
+          this.room.imagesExpireAt ??= Date.parse(this.room.completedAt) + this.imageRetentionMs();
+          await this.persist(this.room);
+          if (!this.room.imagesDeletedAt || !this.room.resultsSaved) {
+            if (await this.ctx.storage.getAlarm() === null) {
+              await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, this.room.imagesExpireAt));
+            }
+          }
+        }
         if (this.room.phase === "prompting" && this.room.promptEndsAt === null) {
           this.room.promptEndsAt = Date.now() + this.room.roundDurationMs;
           await this.ctx.storage.put("room", this.room);
@@ -116,6 +131,9 @@ export class Room extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     await this.initialized;
     await this.advanceForTime(Date.now());
+    if (this.room?.phase === "results" && this.imagesExpired(this.room) && !this.room.imagesDeletedAt) {
+      await this.processResults(this.room);
+    }
 
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/create") {
@@ -143,7 +161,7 @@ export class Room extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.initialized;
     await this.advanceForTime(Date.now());
-    if (this.room?.phase === "results") await this.saveResults(this.room);
+    if (this.room?.phase === "results") await this.processResults(this.room);
   }
 
   async webSocketClose(socket: WebSocket): Promise<void> {
@@ -199,7 +217,10 @@ export class Room extends DurableObject<Env> {
       votes: {},
       winnerPlayerId: null,
       tieBreakApplied: false,
-      completedAt: null
+      completedAt: null,
+      imagesExpireAt: null,
+      imagesDeletedAt: null,
+      resultsSaved: false
     };
     await this.persist(this.room);
 
@@ -296,6 +317,10 @@ export class Room extends DurableObject<Env> {
     }
 
     switch (action) {
+      case "finalize":
+        if (room.phase !== "results") return problem("Winner is not ready.", 409);
+        await this.processResults(room);
+        return json({ saved: room.resultsSaved }, room.resultsSaved ? 200 : 503);
       case "start":
         return this.start(room, payload);
       case "reserve-entry":
@@ -545,6 +570,7 @@ export class Room extends DurableObject<Env> {
     room.generationEndsAt = null;
     room.votingEndsAt = null;
     room.completedAt = new Date().toISOString();
+    room.imagesExpireAt = Date.parse(room.completedAt) + this.imageRetentionMs();
     return "game.finished";
   }
 
@@ -622,7 +648,11 @@ export class Room extends DurableObject<Env> {
     const leader = room.leaderId ? room.players[room.leaderId] : undefined;
     const counts = room.phase === "results" ? voteCounts(room) : {};
     const entries = Object.fromEntries(
-      Object.entries(room.entries).map(([playerId, entry]) => [playerId, { ...entry, voteCount: counts[playerId] ?? 0 }])
+      Object.entries(room.entries).map(([playerId, entry]) => [playerId, {
+        ...entry,
+        ...(this.imagesExpired(room) ? { imageUrl: null, originalImageKey: null } : {}),
+        voteCount: counts[playerId] ?? 0
+      }])
     );
 
     return {
@@ -645,7 +675,9 @@ export class Room extends DurableObject<Env> {
       winnerPlayerId: room.winnerPlayerId,
       tieBreakApplied: room.tieBreakApplied,
       tieBreakRule: room.tieBreakApplied ? "Earliest room join order wins tied votes." : null,
-      completedAt: room.completedAt
+      completedAt: room.completedAt,
+      imagesExpireAt: room.imagesExpireAt,
+      imagesExpired: this.imagesExpired(room)
     };
   }
 
@@ -654,7 +686,7 @@ export class Room extends DurableObject<Env> {
   }
 
   private async persistAndBroadcast(room: SavedRoom, event: RoomEvent): Promise<void> {
-    const deadline = room.countdownEndsAt ?? room.promptEndsAt ?? room.generationEndsAt ?? room.votingEndsAt;
+    const deadline = room.countdownEndsAt ?? room.promptEndsAt ?? room.generationEndsAt ?? room.votingEndsAt ?? room.imagesExpireAt;
     await this.ctx.storage.transaction(async (transaction) => {
       await transaction.put("room", room);
       if (deadline === null) {
@@ -664,28 +696,69 @@ export class Room extends DurableObject<Env> {
       }
     });
     this.broadcast(room, event);
-    if (event === "game.finished") await this.saveResults(room);
+    if (event === "game.finished") await this.processResults(room);
   }
 
-  private async saveResults(room: SavedRoom): Promise<void> {
+  private imageRetentionMs(): number {
+    const seconds = Number(this.env.IMAGE_RETENTION_SECONDS);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 : 600_000;
+  }
+
+  private imagesExpired(room: SavedRoom): boolean {
+    return room.imagesExpireAt !== null && Date.now() >= room.imagesExpireAt;
+  }
+
+  private async processResults(room: SavedRoom): Promise<void> {
+    // External R2/D1 I/O yields: coalesce concurrent finalize, alarm and state requests.
+    if (this.resultWork) return this.resultWork;
+    this.resultWork = this.persistResultsAndCleanup(room);
+    try { await this.resultWork; } finally { this.resultWork = undefined; }
+  }
+
+  private async persistResultsAndCleanup(room: SavedRoom): Promise<void> {
     if (!room.completedAt) return;
     try {
-      const counts = voteCounts(room);
-      const statements = orderedPlayers(room).map((player) => this.env.GALLERY.prepare(
-        "INSERT OR IGNORE INTO game_players (room_code, player_id, player_name, won, image_url, completed_at) VALUES (?, ?, ?, ?, ?, ?)"
-      ).bind(room.code, player.id, player.name, player.id === room.winnerPlayerId ? 1 : 0, room.entries[player.id]?.imageUrl ?? null, room.completedAt));
-      const winner = room.winnerPlayerId ? room.players[room.winnerPlayerId] : undefined;
-      const entry = winner ? room.entries[winner.id] : undefined;
-      if (winner && entry?.originalImageKey && entry.imageUrl && entry.finalPrompt) {
-        statements.push(this.env.GALLERY.prepare(
-          "INSERT OR IGNORE INTO winners (room_code, player_id, player_name, image_key, image_url, final_prompt, prompt_history, vote_count, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ).bind(room.code, winner.id, winner.name, entry.originalImageKey, entry.imageUrl, entry.finalPrompt, JSON.stringify(entry.promptHistory), counts[winner.id] ?? 0, room.completedAt));
+      if (this.imagesExpired(room) && !room.imagesDeletedAt) {
+        // Delete every revision, including superseded images, not just the winner.
+        while (true) {
+          const page = await this.env.IMAGES.list({ prefix: `rooms/${room.code}/`, limit: 1000 });
+          if (!page.objects.length) break;
+          await this.env.IMAGES.delete(page.objects.map((object) => object.key));
+        }
+        await this.env.GALLERY.batch([
+          this.env.GALLERY.prepare("DELETE FROM winners WHERE room_code = ?").bind(room.code),
+          this.env.GALLERY.prepare("UPDATE game_players SET image_url = NULL WHERE room_code = ?").bind(room.code)
+        ]);
+        for (const entry of Object.values(room.entries)) {
+          entry.originalImageKey = null;
+          entry.imageUrl = null;
+        }
+        room.imagesDeletedAt = new Date().toISOString();
+        await this.persist(room);
+        this.broadcast(room, "room.updated");
       }
-      if (statements.length) await this.env.GALLERY.batch(statements);
-      await this.ctx.storage.deleteAlarm();
+      if (!room.resultsSaved) {
+        const counts = voteCounts(room);
+        const statements = orderedPlayers(room).map((player) => this.env.GALLERY.prepare(
+          "INSERT OR IGNORE INTO game_players (room_code, player_id, player_name, won, image_url, completed_at) VALUES (?, ?, ?, ?, ?, ?)"
+        ).bind(room.code, player.id, player.name, player.id === room.winnerPlayerId ? 1 : 0, room.entries[player.id]?.imageUrl ?? null, room.completedAt));
+        const winner = room.winnerPlayerId ? room.players[room.winnerPlayerId] : undefined;
+        const entry = winner ? room.entries[winner.id] : undefined;
+        if (winner && entry?.originalImageKey && entry.imageUrl && entry.finalPrompt) {
+          statements.push(this.env.GALLERY.prepare(
+            "INSERT OR IGNORE INTO winners (room_code, player_id, player_name, image_key, image_url, final_prompt, prompt_history, vote_count, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          ).bind(room.code, winner.id, winner.name, entry.originalImageKey, entry.imageUrl, entry.finalPrompt, JSON.stringify(entry.promptHistory), counts[winner.id] ?? 0, room.completedAt));
+        }
+        if (statements.length) await this.env.GALLERY.batch(statements);
+        room.resultsSaved = true;
+        await this.persist(room);
+      }
+      if (room.imagesDeletedAt) await this.ctx.storage.deleteAlarm();
+      else await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, room.imagesExpireAt ?? Date.now()));
     } catch (error) {
-      console.error("Result persistence failed; retrying", { code: room.code, error: error instanceof Error ? error.message : String(error) });
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      console.error("Result persistence or image cleanup failed; retrying", { code: room.code, error: error instanceof Error ? error.message : String(error) });
+      const expiry = room.imagesExpireAt;
+      await this.ctx.storage.setAlarm(expiry && expiry > Date.now() ? Math.min(expiry, Date.now() + 60_000) : Date.now() + 60_000);
     }
   }
 
@@ -738,7 +811,10 @@ function restoreRoom(saved: Partial<SavedRoom>): SavedRoom {
     votes: saved.votes ?? {},
     winnerPlayerId: saved.winnerPlayerId ?? null,
     tieBreakApplied: saved.tieBreakApplied ?? false,
-    completedAt: saved.completedAt ?? null
+    completedAt: saved.completedAt ?? null,
+    imagesExpireAt: saved.imagesExpireAt ?? null,
+    imagesDeletedAt: saved.imagesDeletedAt ?? null,
+    resultsSaved: saved.resultsSaved ?? false
   };
 }
 
@@ -759,7 +835,7 @@ function emptyEntry(playerId: string): Entry {
 }
 
 function actionFromPath(pathname: string): string | null {
-  const match = /\/actions\/(start|reserve-entry|entry-generating|entry-ready|entry-failed|vote)$/.exec(pathname);
+  const match = /\/actions\/(start|reserve-entry|entry-generating|entry-ready|entry-failed|vote|finalize)$/.exec(pathname);
   return match?.[1] ?? null;
 }
 
@@ -905,7 +981,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function json(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { "content-type": "application/json; charset=UTF-8" }
+    headers: { "content-type": "application/json; charset=UTF-8", "cache-control": "no-store" }
   });
 }
 

@@ -21,7 +21,15 @@ Pricing checked September 11, 2026; USD, before tax. Cloudflare confirmed this a
 - **Workers / Durable Objects / D1:** Within Free quotas, there is no usage charge; exceeding quotas can interrupt play. Workers Free allows 100,000 dynamic requests/day. All HTML in this app is Worker-rendered, so visits are dynamic requests. See [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/), and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
 - **AI:** The account gets 10,000 neurons/day. An image uses approximately 104.2 neurons, so roughly 95 images/day fit if no other app uses the allowance. Voice consumes additional neurons. Free-plan exhaustion stops generation until midnight UTC; it does not buy more usage. The additional application cap is 500 accepted image attempts/day (including voice and failed attempts). See [AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/).
 - **If you later upgrade:** Workers Paid starts at $5/month. Each image is approximately $0.001148 before included usage; 500 images are about $0.574. Ten seconds of Whisper Turbo is approximately $0.000085. Hosting/storage overages are separate. The 500-attempt cap is not a dollar limit or an account-wide billing limit. See [FLUX pricing](https://developers.cloudflare.com/workers-ai/models/flux-2-klein-4b/) and [Whisper pricing](https://developers.cloudflare.com/workers-ai/models/whisper-large-v3-turbo/).
-- **R2 can incur costs on this account:** Standard R2 includes 10 GB-month storage, 1 million Class A operations, and 10 million Class B operations each month. Above these, storage is $0.015/GB-month, writes $4.50/million, and reads $0.36/million; internet egress is free. Allowances are shared with other buckets. Generated images currently remain stored indefinitely. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/).
+- **R2 can incur costs on this account:** Standard R2 includes 10 GB-month storage, 1 million Class A operations, and 10 million Class B operations each month. Above these, storage is $0.015/GB-month, writes/listing $4.50/million, and reads $0.36/million; deletes and internet egress are free. Allowances are shared with other buckets. Images are now temporary; see retention below. Deletion does not refund AI generation usage. See [R2 pricing](https://developers.cloudflare.com/r2/pricing/).
+
+## Image retention
+
+R2 provides temporary shared image storage during play. A Durable Object alarm deletes **all revisions 10 minutes after results**, including the winner, without needing any browser to stay open. The results view and public gallery then lose their images; win totals and textual game records remain. Failed deletion or metadata cleanup retries after one minute. The API stops exposing expired image URLs at the deadline even during a cleanup outage.
+
+Late rejected uploads are deleted immediately. `promptroyale/r2-lifecycle.json` adds a one-day expiration rule scoped to `rooms/` as a fallback for orphan uploads, while retaining the default incomplete multipart upload rule. Lifecycle deletion is asynchronous, typically within 24 hours after expiration; this is a fallback, not the ten-minute timer. See [Cloudflare lifecycle behavior](https://developers.cloudflare.com/r2/buckets/object-lifecycles/).
+
+New image responses use `Cache-Control: no-store`. Images already downloaded or cached under the previous deployment cannot be recalled. R2 is not inherently required for this game concept, but removing it entirely would require replacing shared image storage/delivery.
 
 The application limits room creation and mutations/socket connections to reduce automated abuse. They are not protection against every denial-of-service scenario. Guests can exhaust the shared daily image allowance. Prompt/image moderation is not implemented, and winning images and stage names appear in the public gallery. Session identity is saved in that browser; clearing browser storage resets personal stats access.
 
@@ -35,6 +43,7 @@ npx wrangler login
 npm run typecheck
 npm test
 npx wrangler d1 migrations apply prompt-royale-gallery --remote --config promptroyale/wrangler.jsonc
+npx wrangler r2 bucket lifecycle set prompt-royale-images --file promptroyale/r2-lifecycle.json
 npm run deploy
 ```
 
@@ -67,4 +76,11 @@ Optionally supply `TEST_AUDIO_FILE=/absolute/path/to/spoken-prompt.wav` to exerc
 - The public URL returns HTTP 200 without cookies or credentials; development mock routes return 404, including mixed-case action names. The room Worker's public URL is disabled.
 - Some earlier live image attempts returned a generation error; the same failed model input succeeded on a direct retry. No permanent cause was established. The final full game passed without a retry, but image service failures remain possible and are shown to players. Voice was tested with a synthetic microphone in Chromium; physical iPhone/Safari microphone behavior was not tested.
 
-Verification games are retained as examples in the gallery. GitHub automatic deployment is not configured; deploy future changes with the commands above.
+Verification-game images now follow the same deletion policy. GitHub automatic deployment is not configured; deploy future changes with the commands above.
+
+### Temporary-image update verification
+
+- Type generation/type-checking, builds, and the expanded local runtime regression passed. A three-second test-only retention setting exercised the real alarm handler after disconnected completion: current, superseded, and orphan revision objects were deleted, another room's object was untouched, image URLs returned 404, and win statistics remained. Legacy finalize did not restore gallery images.
+- Deployed with the production retention setting of 600 seconds and verified that four pre-existing completed rooms acquired exactly that expiration interval. All 15 stored verification images were deleted. The bucket's `rooms/` listing is empty; D1 still contains all 20 participation records and four wins, with zero image references.
+- Verified the one-day fallback lifecycle rule through the Cloudflare API. No subscription or AI-usage setting changed.
+- A fresh anonymous mobile Chromium session passed the expired-results check: all four image placeholders, winner and scores, live spectator connection, old image URL returning 404, idempotent finalize, and navigation home. No JavaScript errors or horizontal overflow were detected; the screenshot was visually checked.
