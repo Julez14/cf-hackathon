@@ -2,6 +2,26 @@
 
 Record important product, architecture, implementation, and model decisions here. Keep entries concise and durable; do not add temporary task notes or session history.
 
+## 2026-09-11: Public guest deployment with bounded AI usage
+
+**Status:** Accepted
+
+**Decision:** Deploy the public Worker on `prompt-royale.juelzlax.workers.dev` in the owner's personal account. Keep the room Worker private, preserve anonymous browser sessions and two-to-four-player rooms, and disable development mock entries in production. The explicit public-play request supersedes the original hackathon-audience restriction.
+
+**Rationale:** Players should be able to host and join by name and room code without signing in. Public endpoints need simple abuse controls without introducing account registration.
+
+**Consequences:** IP-based limits allow 20 room creations and 120 mutations/socket connections per minute per Cloudflare location. Shared networks share those limits. A D1 atomic counter limits accepted AI attempts to 500 per UTC day across all rooms; failed attempts also consume a slot. `DAILY_AI_LIMIT=0` explicitly disables this application cap. Cloudflare's account quotas may stop generation sooner. The deployment retains Workers Free, where AI stops at the account's daily free quota rather than billing overages. R2 originals accumulate and can incur storage/operation costs above account-wide allowances. The existing public gallery has no application moderation. No optional paid integrations or external model providers are added.
+
+## 2026-09-11: Persist results from the authoritative room
+
+**Status:** Accepted
+
+**Decision:** Give the Room Worker the gallery D1 binding. At completion, atomically save the winner and all player results using idempotent inserts; retry failed persistence with a Durable Object alarm. Keep the existing public finalize action as an idempotent compatibility path.
+
+**Rationale:** Completion must persist when the voting timer expires after all browsers disconnect. A browser-triggered finalize request is not sufficient.
+
+**Consequences:** D1 remains off the live voting decision path. A persistence outage does not change the winner. No-winner rounds still record participation.
+
 ## 2026-07-22: Use FLUX.2 [klein] 4B for image generation
 
 **Status:** Accepted

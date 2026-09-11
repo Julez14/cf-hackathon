@@ -1,13 +1,6 @@
 import { renderApp } from "./site";
 import { toString as renderQrCode } from "qrcode";
 
-export interface Env {
-  AI: Ai;
-  ROOMS: DurableObjectNamespace;
-  IMAGES: R2Bucket;
-  GALLERY: D1Database;
-}
-
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROOM_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 const PLAYER_ID_PATTERN = /^[a-zA-Z0-9_-]{8,100}$/;
@@ -24,7 +17,32 @@ const MOCK_BRIEFS = [
 
 export default {
   async fetch(request, env): Promise<Response> {
+    try {
+      const response = await routeRequest(request.method === "HEAD" ? new Request(request, { method: "GET" }) : request, env);
+      return request.method === "HEAD" ? new Response(null, { status: response.status, headers: response.headers }) : response;
+    } catch (error) {
+      console.error("Request failed", { path: new URL(request.url).pathname, error: error instanceof Error ? error.message : String(error) });
+      return json({ error: "The game service is temporarily unavailable. Please try again." }, 503);
+    }
+  }
+} satisfies ExportedHandler<Env>;
+
+async function routeRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const origin = request.headers.get("origin");
+    if ((request.method === "POST" || request.headers.get("upgrade")?.toLowerCase() === "websocket") && origin && origin !== url.origin) {
+      return json({ error: "Please play from the game's own website." }, 403);
+    }
+    if (/^\/api\//i.test(url.pathname) && (request.method === "POST" || /\/live$/i.test(url.pathname))) {
+      const ip = request.headers.get("cf-connecting-ip") ?? "local";
+      const limiter = url.pathname === "/api/rooms" ? env.ROOM_LIMITER : env.API_LIMITER;
+      if (!(await limiter.limit({ key: ip })).success) {
+        return new Response(JSON.stringify({ error: "Too many requests. Please try again in a minute." }), { status: 429, headers: { "content-type": "application/json", "retry-after": "60" } });
+      }
+    }
+    if ((/\/actions\/mock-entry$/i.test(url.pathname) || /\/mock-images\//i.test(url.pathname)) && String(env.ALLOW_MOCK_ENTRIES) !== "true") {
+      return json({ error: "Not found." }, 404);
+    }
 
     if (request.method === "POST" && url.pathname === "/api/rooms") {
       return createRoom(env);
@@ -123,7 +141,6 @@ export default {
 
     return json({ error: "Not found." }, 404);
   }
-} satisfies ExportedHandler<Env>;
 
 async function createRoom(env: Env): Promise<Response> {
   try {
@@ -253,7 +270,8 @@ async function generateEntry(
   if (!revision) {
     return json({ error: "The room could not reserve this prompt." }, 502);
   }
-
+  const budgetError = await reserveAiBudget(env, room, playerId, revision);
+  if (budgetError) return budgetError;
   return completeEntry(request, env, room, code, playerId, transcript, revision);
 }
 
@@ -263,7 +281,9 @@ async function handleSpeechEntry(request: Request, env: Env, room: DurableObject
     return json({ error: "Audio clip is too large." }, 413);
   }
 
-  const form = await request.formData().catch(() => undefined);
+  const bounded = await readBoundedBody(request, MAX_AUDIO_BODY_BYTES);
+  if (bounded instanceof Response) return bounded;
+  const form = await new Response(bounded, { headers: { "content-type": request.headers.get("content-type") ?? "" } }).formData().catch(() => undefined);
   const playerId = form?.get("playerId");
   const sessionToken = form?.get("sessionToken");
   const audio = form?.get("audio");
@@ -289,6 +309,8 @@ async function handleSpeechEntry(request: Request, env: Env, room: DurableObject
   }
 
   try {
+    const budgetError = await reserveAiBudget(env, room, playerId, revision);
+    if (budgetError) return budgetError;
     const transcription = await env.AI.run("@cf/openai/whisper-large-v3-turbo", {
       audio: {
         body: audio.stream(),
@@ -342,7 +364,7 @@ async function completeEntry(
     const imageUrl = new URL(`/api/rooms/${code}/images/${encodeURIComponent(playerId)}?revision=${revision}`, request.url).toString();
     const imageResponse = await generateImage(env, finalPrompt, hash(`${code}:${playerId}:${revision}`));
     const imageKey = `rooms/${code}/${playerId}/${revision}`;
-    await env.IMAGES.put(imageKey, await imageResponse.clone().arrayBuffer(), {
+    await env.IMAGES.put(imageKey, imageResponse.body, {
       httpMetadata: { contentType: imageResponse.headers.get("content-type") ?? "application/octet-stream" }
     });
 
@@ -426,6 +448,45 @@ async function generateImage(env: Env, prompt: string, seed: number): Promise<Re
   });
 }
 
+async function reserveAiBudget(env: Env, room: DurableObjectStub, playerId: string, revision: number): Promise<Response | null> {
+  try {
+    const limit = Number(env.DAILY_AI_LIMIT);
+    if (limit === 0) return null;
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("Invalid daily AI limit.");
+    // One atomic statement enforces the cap across all rooms and Cloudflare locations.
+    const reserved = await env.GALLERY.prepare("INSERT INTO daily_ai_usage (day, attempts) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET attempts = attempts + 1 WHERE attempts < ? RETURNING attempts")
+      .bind(new Date().toISOString().slice(0, 10), limit).first();
+    if (reserved) return null;
+    const error = "Today's shared image allowance is used up. Please come back after midnight UTC.";
+    await roomAction(room, "entry-failed", { playerId, revision, error });
+    return json({ error }, 429);
+  } catch (error) {
+    await roomAction(room, "entry-failed", { playerId, revision, error: "Image generation is temporarily unavailable." });
+    throw error;
+  }
+}
+
+async function readBoundedBody(request: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | Response> {
+  const reader = request.body?.getReader();
+  if (!reader) return json({ error: "An audio clip is required." }, 400);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel();
+      return json({ error: "Audio clip is too large." }, 413);
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  return body;
+}
+
 function readGenerationPrompt(snapshot: unknown, playerId: string, revision: number): string | null {
   if (!isRecord(snapshot) || !isRecord(snapshot.entries)) {
     return null;
@@ -463,11 +524,12 @@ async function finalizeWinner(env: Env, room: DurableObjectStub): Promise<Respon
     .bind(snapshot.code, snapshot.winnerPlayerId, winner.name, entry.originalImageKey, entry.imageUrl, entry.finalPrompt, JSON.stringify(Array.isArray(entry.promptHistory) ? entry.promptHistory : []), typeof entry.voteCount === "number" ? entry.voteCount : 0, typeof snapshot.completedAt === "string" ? snapshot.completedAt : new Date().toISOString())
     .run();
   const completedAt = typeof snapshot.completedAt === "string" ? snapshot.completedAt : new Date().toISOString();
+  const entries = snapshot.entries;
   const statements = snapshot.players
     .filter(isRecord)
     .filter((player) => typeof player.id === "string" && typeof player.name === "string")
     .map((player) => {
-      const playerEntry = snapshot.entries[player.id as string];
+      const playerEntry = entries[player.id as string];
       return env.GALLERY.prepare("INSERT OR IGNORE INTO game_players (room_code, player_id, player_name, won, image_url, completed_at) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(snapshot.code, player.id, player.name, player.id === snapshot.winnerPlayerId ? 1 : 0, isRecord(playerEntry) && typeof playerEntry.imageUrl === "string" ? playerEntry.imageUrl : null, completedAt);
     });

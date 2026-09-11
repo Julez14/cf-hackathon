@@ -1,9 +1,15 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "prompt-royale-do",
-  "account_id": "037fe5fbda93b86022ee8c7583d1cfb1",
+  "account_id": "5123e5b48cbca84dedd3925e6085c866",
   "main": "src/room.ts",
-  "compatibility_date": "2026-07-22",
+  "compatibility_date": "2026-09-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "d1_databases": [
+    { "binding": "GALLERY", "database_name": "prompt-royale-gallery", "database_id": "61430743-2ad4-421a-8e02-f2ec09edf2b7", "migrations_dir": "../promptroyale/migrations" }
+  ],
   "migrations": [
     {
       "tag": "v1",
@@ -11,6 +17,8 @@
     }
   ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "persist": true, "invocation_logs": false }
   }
 }

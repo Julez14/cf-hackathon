@@ -8,6 +8,9 @@ This map points agents to the repository's important directories and entry point
 - `PROMPT_ROYALE_PRD.md`: Product scope and MVP requirements.
 - `PROMPT_ROYALE_FUNCTIONAL_SPEC.md`: Detailed game behavior and implementation flow.
 - `package.json`: npm workspace definition and root commands for all projects.
+- `DEPLOYMENT.md`: Public URL, resource inventory, costs, usage limits, and redeployment instructions.
+- `tests/local.mjs`: Local runtime regression checks without paid services.
+- `tests/live.spec.mjs`: Four-browser production game verification with optional synthetic voice input.
 - `promptroyale/`: Public Cloudflare Worker project for the browser UI and API.
 - `promptroyale/package.json`: Public Worker scripts and workspace identity.
 - `promptroyale/wrangler.jsonc`: Public Worker deployment config and external `ROOMS` Durable Object binding.

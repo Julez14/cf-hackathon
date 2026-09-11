@@ -1,9 +1,17 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "prompt-royale",
-  "account_id": "037fe5fbda93b86022ee8c7583d1cfb1",
+  "account_id": "5123e5b48cbca84dedd3925e6085c866",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-22",
+  "compatibility_date": "2026-09-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "DAILY_AI_LIMIT": "500", "ALLOW_MOCK_ENTRIES": "false" },
+  "ratelimits": [
+    { "name": "ROOM_LIMITER", "namespace_id": "2026091101", "simple": { "limit": 20, "period": 60 } },
+    { "name": "API_LIMITER", "namespace_id": "2026091102", "simple": { "limit": 120, "period": 60 } }
+  ],
   "ai": {
     "binding": "AI"
   },
@@ -17,7 +25,7 @@
     {
       "binding": "GALLERY",
       "database_name": "prompt-royale-gallery",
-      "database_id": "9c36d772-982b-4a2e-b87b-30d09cab5ea4",
+      "database_id": "61430743-2ad4-421a-8e02-f2ec09edf2b7",
       "migrations_dir": "migrations"
     }
   ],
@@ -31,6 +39,8 @@
     ]
   },
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "persist": true, "invocation_logs": false }
   }
 }

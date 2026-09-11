@@ -2,6 +2,8 @@
 
 ## Overview
 
+**Play publicly:** https://prompt-royale.juelzlax.workers.dev — enter a stage name; no login required. See [deployment, costs, and limits](./DEPLOYMENT.md).
+
 Prompt Royale is a real-time multiplayer image-generation party game for two to four players. Players join a room, add a typed or voice twist to a shared creative brief, watch each image arrive live, then vote for a winner.
 
 ## Tutorial

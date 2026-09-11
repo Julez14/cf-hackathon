@@ -21,6 +21,7 @@ export const appClient = String.raw`
   let discardRecording = false;
   let selectedRoundDuration = 90;
   let audioChunks = [];
+  let promptDraft = "";
 
   function escapeHtml(value) {
     return String(value).replace(/[&<>\"]/g, (character) => {
@@ -489,7 +490,7 @@ export const appClient = String.raw`
     const promptHistory = Array.isArray(entry.promptHistory) && entry.promptHistory.length
       ? '<details class="prompt-stack"' + (isSelf || mode === "results" ? ' open' : '') + '><summary>Evolution stack (' + entry.promptHistory.length + ')</summary><ol><li class="base-prompt"><span>Base</span>' + escapeHtml(snapshot.creativeBrief) + '</li>' + entry.promptHistory.map((prompt, promptIndex) => '<li><span>' + (promptIndex + 1) + '</span>' + escapeHtml(prompt) + '</li>').join('') + '</ol></details>'
       : '';
-    const voteButton = mode === "voting" && entry.status === "ready" && !isSelf && !hasVoted
+    const voteButton = mode === "voting" && snapshot.players.some((participant) => participant.id === getPlayerId()) && entry.status === "ready" && !isSelf && !hasVoted
       ? '<button class="button small vote-button" data-candidate="' + escapeHtml(player.id) + '" type="button">Vote for this</button>'
       : '';
     const votes = mode === "results" ? '<strong class="vote-total">' + entry.voteCount + ' vote' + (entry.voteCount === 1 ? '' : 's') + '</strong>' : '';
@@ -511,10 +512,13 @@ export const appClient = String.raw`
   }
 
   function renderPrompting(code, snapshot) {
+    const previousInput = document.querySelector("#twist-input");
+    const hadFocus = previousInput && document.activeElement === previousInput;
+    const selection = hadFocus ? [previousInput.selectionStart, previousInput.selectionEnd] : null;
     const ownEntry = snapshot.entries[getPlayerId()];
     const canSubmit = ownEntry && ownEntry.status !== "transcribing" && ownEntry.status !== "generating";
     const hasImage = Boolean(ownEntry && ownEntry.imageUrl);
-    const workingCopy = ownEntry && ownEntry.status === "transcribing" ? "Listening back and transcribing your twist..." : "Your image is evolving. You can add another twist when it is ready.";
+    const workingCopy = !ownEntry ? "You are watching this round. Join a new room to play." : ownEntry.status === "transcribing" ? "Listening back and transcribing your twist..." : "Your image is evolving. You can add another twist when it is ready.";
     const isRecording = mediaRecorder && mediaRecorder.state === "recording";
     const voiceControls = isRecording
       ? '<div class="voice-row is-recording"><span><i class="recording-dot"></i> Recording <strong id="recording-elapsed">' + recordingElapsed() + '</strong> / 10.0s</span><button class="button pink" id="speech-button" type="button">Stop recording</button></div>'
@@ -528,16 +532,27 @@ export const appClient = String.raw`
 
     const form = document.querySelector("#prompt-form");
     if (form) {
+      const draftInput = document.querySelector("#twist-input");
+      draftInput.value = promptDraft;
+      draftInput.addEventListener("input", () => { promptDraft = draftInput.value; });
+      if (hadFocus) {
+        draftInput.focus({ preventScroll: true });
+        draftInput.setSelectionRange(selection[0], selection[1]);
+      }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         const input = document.querySelector("#twist-input");
         const button = form.querySelector("button");
         const transcript = String(input.value || "").trim();
         if (!transcript) return;
+        promptDraft = "";
         setBusy(button, true, "AI is cooking...");
         try {
           await postAction(code, "submit", { transcript });
         } catch (error) {
+          promptDraft = transcript;
+          const currentInput = document.querySelector("#twist-input");
+          if (currentInput) currentInput.value = promptDraft;
           setFeedback("prompt-feedback", error instanceof Error ? error.message : "Image generation failed.");
           setBusy(button, false, hasImage ? "Evolve image" : "Create image");
         }
@@ -601,14 +616,13 @@ export const appClient = String.raw`
       });
       mediaRecorder.start();
       recordingStartedAt = Date.now();
-      button.closest(".voice-row").classList.add("is-recording");
-      button.textContent = "Stop recording";
-      const label = button.previousElementSibling;
-      label.innerHTML = '<i class="recording-dot"></i> Recording <strong id="recording-elapsed">0.0</strong> / 10.0s';
       recordingInterval = window.setInterval(updateRecordingElapsed, 100);
       recordingTimer = window.setTimeout(() => {
         if (mediaRecorder && mediaRecorder.state === "recording") mediaRecorder.stop();
       }, 10000);
+      // Another player's update can replace the clicked button while permission is pending.
+      // Render from current recording state instead of mutating a detached DOM element.
+      if (latestSnapshot) renderRoomState(code, latestSnapshot);
     } catch {
       setFeedback("prompt-feedback", "Microphone access is required for voice prompts.");
     }
@@ -727,6 +741,11 @@ export const appClient = String.raw`
     }
     const snapshot = result.snapshot;
     const isKnownPlayer = snapshot.players.some((player) => player.id === getPlayerId());
+    if (!isKnownPlayer && snapshot.phase !== "lobby") {
+      renderRoomState(code, snapshot);
+      connectRoom(code, true);
+      return;
+    }
     if (!isKnownPlayer && snapshot.players.length >= snapshot.capacity) {
       updateConnection("Room full", "error");
       return;
@@ -735,7 +754,7 @@ export const appClient = String.raw`
     connectRoom(code);
   }
 
-  function connectRoom(code) {
+  function connectRoom(code, spectator = false) {
     if (socket && (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)) return;
 
     const endpoint = new URL("/api/rooms/" + code + "/live", window.location.origin);
@@ -743,6 +762,7 @@ export const appClient = String.raw`
     endpoint.searchParams.set("playerId", getPlayerId());
     endpoint.searchParams.set("sessionToken", getRoomToken(code));
     endpoint.searchParams.set("name", storedName());
+    if (spectator) endpoint.searchParams.set("spectator", "true");
     updateConnection("Connecting", "");
 
     socket = new WebSocket(endpoint);
@@ -788,6 +808,11 @@ export const appClient = String.raw`
     const snapshot = result.snapshot;
 
     const isKnownPlayer = snapshot.players.some((player) => player.id === getPlayerId());
+    if (!isKnownPlayer && snapshot.phase !== "lobby") {
+      renderRoomState(code, snapshot);
+      connectRoom(code, true);
+      return;
+    }
     if (!isKnownPlayer && snapshot.players.length >= snapshot.capacity) {
       updateConnection("Room full", "error");
       const lobby = document.querySelector("#lobby-content");

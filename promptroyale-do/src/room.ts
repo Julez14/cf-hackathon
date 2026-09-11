@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-
-interface Env {}
+import { timingSafeEqual } from "node:crypto";
 
 const MAX_PLAYERS = 4;
 const MIN_PLAYERS = 2;
@@ -144,6 +143,7 @@ export class Room extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.initialized;
     await this.advanceForTime(Date.now());
+    if (this.room?.phase === "results") await this.saveResults(this.room);
   }
 
   async webSocketClose(socket: WebSocket): Promise<void> {
@@ -243,9 +243,10 @@ export class Room extends DurableObject<Env> {
       return problem("A valid player identity is required.", 400);
     }
 
-    const existingPlayer = room.players[playerId];
     const sessionTokenHash = await hashSessionToken(sessionToken);
-    if (existingPlayer && room.sessionTokenHashes[playerId] && room.sessionTokenHashes[playerId] !== sessionTokenHash) {
+    // Re-read after hashing: another socket may have claimed this ID while awaiting crypto.
+    const existingPlayer = room.players[playerId];
+    if (existingPlayer && room.sessionTokenHashes[playerId] && !equalHashes(room.sessionTokenHashes[playerId], sessionTokenHash)) {
       return problem("This player identity belongs to another session.", 403);
     }
 
@@ -663,6 +664,29 @@ export class Room extends DurableObject<Env> {
       }
     });
     this.broadcast(room, event);
+    if (event === "game.finished") await this.saveResults(room);
+  }
+
+  private async saveResults(room: SavedRoom): Promise<void> {
+    if (!room.completedAt) return;
+    try {
+      const counts = voteCounts(room);
+      const statements = orderedPlayers(room).map((player) => this.env.GALLERY.prepare(
+        "INSERT OR IGNORE INTO game_players (room_code, player_id, player_name, won, image_url, completed_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).bind(room.code, player.id, player.name, player.id === room.winnerPlayerId ? 1 : 0, room.entries[player.id]?.imageUrl ?? null, room.completedAt));
+      const winner = room.winnerPlayerId ? room.players[room.winnerPlayerId] : undefined;
+      const entry = winner ? room.entries[winner.id] : undefined;
+      if (winner && entry?.originalImageKey && entry.imageUrl && entry.finalPrompt) {
+        statements.push(this.env.GALLERY.prepare(
+          "INSERT OR IGNORE INTO winners (room_code, player_id, player_name, image_key, image_url, final_prompt, prompt_history, vote_count, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ).bind(room.code, winner.id, winner.name, entry.originalImageKey, entry.imageUrl, entry.finalPrompt, JSON.stringify(entry.promptHistory), counts[winner.id] ?? 0, room.completedAt));
+      }
+      if (statements.length) await this.env.GALLERY.batch(statements);
+      await this.ctx.storage.deleteAlarm();
+    } catch (error) {
+      console.error("Result persistence failed; retrying", { code: room.code, error: error instanceof Error ? error.message : String(error) });
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    }
   }
 
   private broadcast(room: SavedRoom, event: RoomEvent): void {
@@ -825,7 +849,12 @@ async function hasValidSession(room: SavedRoom, playerId: string, value: unknown
   }
 
   const expectedHash = room.sessionTokenHashes[playerId];
-  return Boolean(expectedHash) && expectedHash === (await hashSessionToken(value));
+  return Boolean(expectedHash) && equalHashes(expectedHash, await hashSessionToken(value));
+}
+
+function equalHashes(left: string, right: string): boolean {
+  const encoder = new TextEncoder();
+  return left.length === right.length && timingSafeEqual(encoder.encode(left), encoder.encode(right));
 }
 
 async function hashSessionToken(value: string): Promise<string> {
